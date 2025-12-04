@@ -1,0 +1,14 @@
+# circuit pattern_count [seed]
+# Adjust the counts or seeds per testcase and run scripts/generate_all.sh
+# to rebuild every .in file.
+c17 100 42
+c432 100 42
+c499 100 42
+c880 100 42
+c1355 100 42
+c1908 100 42
+c2670 100 42
+c3540 100 42
+c5315 100 42
+c6288 100 42
+c7552 100 42
