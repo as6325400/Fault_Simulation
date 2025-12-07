@@ -11,14 +11,14 @@
 namespace core {
 
 struct PatternEntry {
-    std::string net;
+    NetId net{};
     int value{};
 };
 
 struct Pattern {
     std::vector<PatternEntry> assignments;
 
-    std::string toString() const;
+    std::string toString(const Circuit& circuit) const;
 };
 
 class PatternGenerator {

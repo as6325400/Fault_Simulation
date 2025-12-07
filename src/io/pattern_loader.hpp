@@ -10,9 +10,9 @@ namespace io {
 
 struct PatternRow {
     core::Pattern pattern;
-    std::unordered_map<std::string, int> provided_outputs;
+    std::unordered_map<core::NetId, int> provided_outputs;
 };
 
-std::vector<PatternRow> loadPatterns(const std::string& path);
+std::vector<PatternRow> loadPatterns(const core::Circuit& circuit, const std::string& path);
 
 }  // namespace io

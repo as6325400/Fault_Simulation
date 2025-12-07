@@ -2,6 +2,7 @@
 
 #include <cctype>
 #include <fstream>
+#include <limits>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -32,7 +33,7 @@ std::string removeWhitespace(const std::string& text) {
     return cleaned;
 }
 
-core::Pattern parsePatternLine(const std::string& line) {
+core::Pattern parsePatternLine(const std::string& line, const core::Circuit& circuit) {
     core::Pattern pattern;
     std::stringstream ss(line);
     std::string section;
@@ -46,13 +47,17 @@ core::Pattern parsePatternLine(const std::string& line) {
         if (eq == std::string::npos) {
             throw std::runtime_error("Invalid pattern token (missing '='): " + section);
         }
-        const std::string net = section.substr(0, eq);
+        const std::string net_name = section.substr(0, eq);
         const std::string value_str = section.substr(eq + 1);
-        if (net.empty() || value_str.empty()) {
+        if (net_name.empty() || value_str.empty()) {
             throw std::runtime_error("Invalid pattern token: " + section);
         }
         if (value_str != "0" && value_str != "1") {
-            throw std::runtime_error("Pattern values must be 0 or 1 for net " + net);
+            throw std::runtime_error("Pattern values must be 0 or 1 for net " + net_name);
+        }
+        const auto net = circuit.netId(net_name);
+        if (net == std::numeric_limits<core::NetId>::max()) {
+            throw std::runtime_error("Pattern references unknown net: " + net_name);
         }
         pattern.assignments.push_back({net, value_str == "1" ? 1 : 0});
     }
@@ -84,7 +89,8 @@ std::string stripComments(const std::string& line) {
 
 namespace io {
 
-std::vector<core::Pattern> parsePatternFile(const std::string& file_path) {
+std::vector<core::Pattern> parsePatternFile(const core::Circuit& circuit,
+                                            const std::string& file_path) {
     std::ifstream input(file_path);
     if (!input) {
         throw std::runtime_error("Unable to open pattern file: " + file_path);
@@ -98,7 +104,7 @@ std::vector<core::Pattern> parsePatternFile(const std::string& file_path) {
         if (line.empty()) {
             continue;
         }
-        patterns.push_back(parsePatternLine(line));
+        patterns.push_back(parsePatternLine(line, circuit));
     }
 
     if (patterns.empty()) {

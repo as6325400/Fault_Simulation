@@ -1,6 +1,7 @@
 #include "io/pattern_loader.hpp"
 
 #include <fstream>
+#include <limits>
 #include <sstream>
 #include <stdexcept>
 
@@ -41,7 +42,7 @@ int parseBit(const std::string& value) {
     throw std::runtime_error("Invalid bit value: " + value);
 }
 
-core::Pattern parsePatternSection(const std::string& section) {
+core::Pattern parsePatternSection(const std::string& section, const core::Circuit& circuit) {
     core::Pattern pattern;
     for (const auto& token : splitAssignments(section)) {
         const auto eq = token.find('=');
@@ -49,10 +50,14 @@ core::Pattern parsePatternSection(const std::string& section) {
             throw std::runtime_error("Assignment missing '=': " + token);
         }
         core::PatternEntry entry;
-        entry.net = trim(token.substr(0, eq));
+        const std::string net_name = trim(token.substr(0, eq));
+        entry.net = circuit.netId(net_name);
+        if (entry.net == std::numeric_limits<core::NetId>::max()) {
+            throw std::runtime_error("Unknown net in pattern: " + net_name);
+        }
         const std::string value_str = trim(token.substr(eq + 1));
         entry.value = parseBit(value_str);
-        if (entry.net.empty()) {
+        if (net_name.empty()) {
             throw std::runtime_error("Empty net name in assignment: " + token);
         }
         pattern.assignments.push_back(entry);
@@ -63,8 +68,9 @@ core::Pattern parsePatternSection(const std::string& section) {
     return pattern;
 }
 
-std::unordered_map<std::string, int> parseOutputSection(const std::string& section) {
-    std::unordered_map<std::string, int> outputs;
+std::unordered_map<core::NetId, int> parseOutputSection(const std::string& section,
+                                                        const core::Circuit& circuit) {
+    std::unordered_map<core::NetId, int> outputs;
     if (section.empty()) {
         return outputs;
     }
@@ -73,9 +79,13 @@ std::unordered_map<std::string, int> parseOutputSection(const std::string& secti
         if (eq == std::string::npos) {
             throw std::runtime_error("Output assignment missing '=': " + token);
         }
-        std::string net = trim(token.substr(0, eq));
+        const std::string net_name = trim(token.substr(0, eq));
+        const auto net = circuit.netId(net_name);
+        if (net == std::numeric_limits<core::NetId>::max()) {
+            throw std::runtime_error("Unknown net in output assignment: " + net_name);
+        }
         const std::string value_str = trim(token.substr(eq + 1));
-        if (net.empty()) {
+        if (net_name.empty()) {
             throw std::runtime_error("Empty net name in output assignment: " + token);
         }
         outputs[net] = parseBit(value_str);
@@ -87,7 +97,7 @@ std::unordered_map<std::string, int> parseOutputSection(const std::string& secti
 
 namespace io {
 
-std::vector<PatternRow> loadPatterns(const std::string& path) {
+std::vector<PatternRow> loadPatterns(const core::Circuit& circuit, const std::string& path) {
     std::ifstream input(path);
     if (!input) {
         throw std::runtime_error("Unable to open pattern file: " + path);
@@ -107,8 +117,8 @@ std::vector<PatternRow> loadPatterns(const std::string& path) {
         if (pipe_pos != std::string::npos) {
             output_section = line.substr(pipe_pos + 1);
         }
-        row.pattern = parsePatternSection(pattern_section);
-        row.provided_outputs = parseOutputSection(output_section);
+        row.pattern = parsePatternSection(pattern_section, circuit);
+        row.provided_outputs = parseOutputSection(output_section, circuit);
         rows.push_back(std::move(row));
     }
 

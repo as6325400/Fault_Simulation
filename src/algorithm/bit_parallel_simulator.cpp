@@ -36,28 +36,11 @@ uint64_t xorReduce(const std::vector<uint64_t>& values, const std::vector<std::s
     return result & mask;
 }
 
-std::vector<std::size_t> indexVector(const std::vector<std::string>& nets,
-                                     const std::unordered_map<std::string, std::size_t>& map) {
-    std::vector<std::size_t> output;
-    output.reserve(nets.size());
-    for (const auto& net : nets) {
-        auto it = map.find(net);
-        if (it == map.end()) {
-            throw std::runtime_error("Unknown net encountered: " + net);
-        }
-        output.push_back(it->second);
-    }
-    return output;
-}
-
 }  // namespace
 
 BitParallelSimulator::BitParallelSimulator(const core::Circuit& circuit) : circuit_(circuit) {
     net_names_ = circuit_.netNames();
-    for (std::size_t i = 0; i < net_names_.size(); ++i) {
-        net_index_.emplace(net_names_[i], i);
-    }
-    output_indices_ = indexVector(circuit_.primaryOutputs(), net_index_);
+    output_indices_ = circuit_.primaryOutputs();
 }
 
 const std::vector<std::string>& BitParallelSimulator::netNames() const {
@@ -102,15 +85,16 @@ std::vector<bool> BitParallelSimulator::simulateChunk(
         return {};
     }
 
+    const std::size_t net_count = net_names_.size();
     const std::size_t chunk_bits = chunk.size() + 1;  // include golden context
     const uint64_t mask =
         (chunk_bits >= 64) ? std::numeric_limits<uint64_t>::max()
                            : ((uint64_t{1} << chunk_bits) - 1);
     const uint64_t mask_without_base = mask & ~uint64_t{1};
 
-    std::vector<uint64_t> values(net_names_.size(), 0);
-    std::vector<uint64_t> force_zero(net_names_.size(), 0);
-    std::vector<uint64_t> force_one(net_names_.size(), 0);
+    std::vector<uint64_t> values(net_count, 0);
+    std::vector<uint64_t> force_zero(net_count, 0);
+    std::vector<uint64_t> force_one(net_count, 0);
 
     auto applyForcing = [&](std::size_t index) {
         if (force_zero[index]) {
@@ -133,38 +117,16 @@ std::vector<bool> BitParallelSimulator::simulateChunk(
     }
 
     for (const auto& entry : pattern.assignments) {
-        auto it = net_index_.find(entry.net);
-        if (it == net_index_.end()) {
-            throw std::runtime_error("Pattern references unknown net: " + entry.net);
+        const std::size_t idx = entry.net;
+        if (idx >= net_count) {
+            throw std::runtime_error("Pattern references unknown net");
         }
-        const std::size_t idx = it->second;
         values[idx] = entry.value ? mask : 0;
         applyForcing(idx);
     }
 
-    const auto gateInputIndices = [&](const core::Gate& gate) {
-        std::vector<std::size_t> indices;
-        indices.reserve(gate.inputs.size());
-        for (const auto& net : gate.inputs) {
-            auto it = net_index_.find(net);
-            if (it == net_index_.end()) {
-                throw std::runtime_error("Gate references unknown net: " + net);
-            }
-            indices.push_back(it->second);
-        }
-        return indices;
-    };
-
-    const auto getIndex = [&](const std::string& net) -> std::size_t {
-        auto it = net_index_.find(net);
-        if (it == net_index_.end()) {
-            throw std::runtime_error("Unknown net referenced: " + net);
-        }
-        return it->second;
-    };
-
     for (const auto& gate : circuit_.gates()) {
-        const auto input_indices = gateInputIndices(gate);
+        const auto& input_indices = gate.inputs;
         uint64_t result = 0;
         switch (gate.type) {
             case core::GateType::And:
@@ -201,7 +163,7 @@ std::vector<bool> BitParallelSimulator::simulateChunk(
             default:
                 throw std::runtime_error("Unknown gate type encountered during simulation");
         }
-        const std::size_t out_idx = getIndex(gate.output);
+        const std::size_t out_idx = gate.output;
         values[out_idx] = result;
         applyForcing(out_idx);
     }

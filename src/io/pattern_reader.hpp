@@ -7,6 +7,7 @@
 
 namespace io {
 
-std::vector<core::Pattern> parsePatternFile(const std::string& file_path);
+std::vector<core::Pattern> parsePatternFile(const core::Circuit& circuit,
+                                            const std::string& file_path);
 
 }  // namespace io

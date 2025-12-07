@@ -151,14 +151,17 @@ core::Circuit parseCircuit(const std::string& file_path) {
         core::Gate gate;
         gate.type = core::gateTypeFromString(gate_type_str);
         gate.name = gate_name;
-        gate.output = nets.front();
-        gate.inputs.assign(nets.begin() + 1, nets.end());
+        gate.output = circuit.ensureNet(nets.front(), core::NetType::Wire);
+        for (std::size_t i = 1; i < nets.size(); ++i) {
+            gate.inputs.push_back(circuit.ensureNet(nets[i], core::NetType::Wire));
+        }
         circuit.addGate(gate);
     }
 
     if (circuit.name().empty()) {
         throw std::runtime_error("Circuit missing module declaration in " + file_path);
     }
+    circuit.finalizeNets();
     return circuit;
 }
 

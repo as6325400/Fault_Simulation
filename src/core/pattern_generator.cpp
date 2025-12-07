@@ -26,13 +26,13 @@ std::vector<Pattern> PatternGenerator::generate(std::size_t count) {
     return patterns;
 }
 
-std::string Pattern::toString() const {
+std::string Pattern::toString(const Circuit& circuit) const {
     std::ostringstream oss;
     for (std::size_t i = 0; i < assignments.size(); ++i) {
         if (i != 0) {
             oss << ", ";
         }
-        oss << assignments[i].net << '=' << assignments[i].value;
+        oss << circuit.netName(assignments[i].net) << '=' << assignments[i].value;
     }
     return oss.str();
 }

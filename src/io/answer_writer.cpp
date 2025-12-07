@@ -12,7 +12,7 @@ std::vector<int> extractOutputs(const io::PatternRow& row, const core::Circuit& 
     for (const auto& net : po) {
         const auto it = row.provided_outputs.find(net);
         if (it == row.provided_outputs.end()) {
-            throw std::runtime_error("Pattern missing golden output for net " + net);
+            throw std::runtime_error("Pattern missing golden output for net " + circuit.netName(net));
         }
         outputs.push_back(it->second);
     }
@@ -28,7 +28,7 @@ void writeAnswerFile(const core::Circuit& circuit, const std::vector<PatternRow>
                      const std::string& output_path) {
     const auto& nets = simulator.netNames();
 
-    std::ofstream output(output_path);
+    std::ofstream output(output_path, std::ios::binary);
     if (!output) {
         throw std::runtime_error("Unable to open output file: " + output_path);
     }

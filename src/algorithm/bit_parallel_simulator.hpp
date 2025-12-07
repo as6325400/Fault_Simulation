@@ -1,7 +1,6 @@
 #pragma once
 
 #include <string>
-#include <unordered_map>
 #include <vector>
 
 #include "algorithm/fault_simulator.hpp"
@@ -29,7 +28,6 @@ private:
 
     const core::Circuit& circuit_;
     std::vector<std::string> net_names_;
-    std::unordered_map<std::string, std::size_t> net_index_;
     std::vector<std::size_t> output_indices_;
 };
 

@@ -7,6 +7,8 @@
 
 namespace core {
 
+using NetId = std::size_t;
+
 enum class GateType {
     And,
     Or,
@@ -32,8 +34,8 @@ std::string gateTypeToString(GateType type);
 struct Gate {
     GateType type{GateType::Unknown};
     std::string name;
-    std::string output;
-    std::vector<std::string> inputs;
+    NetId output{};
+    std::vector<NetId> inputs;
 };
 
 class Circuit {
@@ -47,24 +49,34 @@ public:
 
     void addGate(const Gate& gate);
 
-    const std::vector<std::string>& primaryInputs() const;
-    const std::vector<std::string>& primaryOutputs() const;
-    const std::vector<std::string>& wires() const;
+    void finalizeNets();
+
+    const std::vector<NetId>& primaryInputs() const;
+    const std::vector<NetId>& primaryOutputs() const;
+    const std::vector<NetId>& wires() const;
     const std::vector<Gate>& gates() const;
-    std::vector<std::string> netNames() const;
+    const std::vector<std::string>& netNames() const;
+    std::size_t netCount() const;
+    const std::string& netName(NetId id) const;
 
     bool hasNet(const std::string& net) const;
     NetType netType(const std::string& net) const;
+    NetType netType(NetId id) const;
+
+    NetId netId(const std::string& net) const;
+    NetId ensureNet(const std::string& net, NetType type);
 
 private:
-    void registerNet(const std::string& net, NetType type);
+    NetId registerNet(const std::string& net, NetType type);
 
     std::string name_;
-    std::vector<std::string> primary_inputs_;
-    std::vector<std::string> primary_outputs_;
-    std::vector<std::string> wires_;
+    std::vector<NetId> primary_inputs_;
+    std::vector<NetId> primary_outputs_;
+    std::vector<NetId> wires_;
     std::vector<Gate> gates_;
-    std::unordered_map<std::string, NetType> nets_;
+    std::vector<std::string> net_names_;
+    std::vector<NetType> net_types_;
+    std::unordered_map<std::string, NetId> net_lookup_;
 };
 
 }  // namespace core

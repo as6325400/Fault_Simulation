@@ -58,13 +58,13 @@ int main(int argc, char** argv) {
         const std::string pattern_path = "testcases/" + base_name + ".in";
 
         auto circuit = io::parseCircuit(circuit_path);
-        auto rows = io::loadPatterns(pattern_path);
+        auto rows = io::loadPatterns(circuit, pattern_path);
 
         algorithm::BitParallelSimulator bit(circuit);
-        // algorithm::BaselineSimulator baseline(circuit);
+        algorithm::BaselineSimulator baseline(circuit);
         
         // 擇一使用 看要用什麼演算法就丟哪個 object 進去
-        io::writeAnswerFile(circuit, rows, bit, output_path);
+        io::writeAnswerFile(circuit, rows, baseline, output_path);
     } catch (const std::exception& ex) {
         std::cerr << "Error: " << ex.what() << '\n';
         return EXIT_FAILURE;

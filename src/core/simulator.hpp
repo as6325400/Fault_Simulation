@@ -1,6 +1,6 @@
 #pragma once
 
-#include <unordered_map>
+#include <limits>
 #include <vector>
 
 #include "core/circuit.hpp"
@@ -9,12 +9,12 @@
 namespace core {
 
 struct SimulationResult {
-    std::unordered_map<std::string, int> net_values;
+    std::vector<int> net_values;
     std::vector<int> primary_outputs;
 };
 
 struct FaultSpec {
-    std::string net;
+    NetId net{std::numeric_limits<NetId>::max()};
     int value{};
 };
 
@@ -32,7 +32,7 @@ private:
     SimulationResult simulateInternal(const Pattern& pattern,
                                       const FaultSpec* fault) const;
     int evaluateGateValue(GateType type, const std::vector<int>& values) const;
-    bool tryEvaluateGate(const Gate& gate, std::unordered_map<std::string, int>& values,
+    bool tryEvaluateGate(const Gate& gate, std::vector<int>& values,
                          const FaultSpec* fault) const;
 };
 

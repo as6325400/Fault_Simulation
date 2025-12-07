@@ -2,6 +2,8 @@
 
 #include <algorithm>
 #include <cctype>
+#include <limits>
+#include <numeric>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -14,8 +16,8 @@ std::string toUpper(std::string value) {
     return value;
 }
 
-template <typename Container>
-bool contains(const Container& container, const std::string& value) {
+template <typename Container, typename T>
+bool contains(const Container& container, const T& value) {
     return std::find(container.begin(), container.end(), value) != container.end();
 }
 
@@ -85,48 +87,96 @@ const std::string& Circuit::name() const {
 }
 
 void Circuit::addPrimaryInput(const std::string& net) {
-    if (!contains(primary_inputs_, net)) {
-        primary_inputs_.push_back(net);
+    NetId id = registerNet(net, NetType::PrimaryInput);
+    if (!contains(primary_inputs_, id)) {
+        primary_inputs_.push_back(id);
     }
-    registerNet(net, NetType::PrimaryInput);
 }
 
 void Circuit::addPrimaryOutput(const std::string& net) {
-    if (!contains(primary_outputs_, net)) {
-        primary_outputs_.push_back(net);
+    NetId id = registerNet(net, NetType::PrimaryOutput);
+    if (!contains(primary_outputs_, id)) {
+        primary_outputs_.push_back(id);
     }
-    registerNet(net, NetType::PrimaryOutput);
 }
 
 void Circuit::addWire(const std::string& net) {
-    if (!contains(wires_, net)) {
-        wires_.push_back(net);
+    NetId id = registerNet(net, NetType::Wire);
+    if (!contains(wires_, id)) {
+        wires_.push_back(id);
     }
-    registerNet(net, NetType::Wire);
 }
 
 void Circuit::addGate(const Gate& gate) {
-    if (gate.output.empty()) {
+    if (gate.output == std::numeric_limits<NetId>::max()) {
         throw std::invalid_argument("Gate output net cannot be empty");
     }
+    if (gate.output >= net_names_.size()) {
+        throw std::invalid_argument("Gate references unregistered output net");
+    }
+    for (NetId input : gate.inputs) {
+        if (input == std::numeric_limits<NetId>::max() || input >= net_names_.size()) {
+            throw std::invalid_argument("Gate references unregistered input net");
+        }
+    }
     gates_.push_back(gate);
-    registerNet(gate.output, NetType::Wire);
-    for (const auto& input : gate.inputs) {
-        if (!input.empty()) {
-            registerNet(input, NetType::Wire);
+}
+
+void Circuit::finalizeNets() {
+    const std::size_t count = net_names_.size();
+    std::vector<NetId> order(count);
+    std::iota(order.begin(), order.end(), 0);
+    std::sort(order.begin(), order.end(),
+              [&](NetId a, NetId b) { return net_names_[a] < net_names_[b]; });
+
+    std::vector<NetId> old_to_new(count);
+    for (NetId new_id = 0; new_id < count; ++new_id) {
+        old_to_new[order[new_id]] = new_id;
+    }
+
+    auto remap = [&](NetId id) { return old_to_new[id]; };
+
+    std::vector<std::string> new_names(count);
+    std::vector<NetType> new_types(count);
+    for (NetId new_id = 0; new_id < count; ++new_id) {
+        const NetId old_id = order[new_id];
+        new_names[new_id] = net_names_[old_id];
+        new_types[new_id] = net_types_[old_id];
+    }
+    net_names_ = std::move(new_names);
+    net_types_ = std::move(new_types);
+
+    net_lookup_.clear();
+    for (NetId id = 0; id < net_names_.size(); ++id) {
+        net_lookup_.emplace(net_names_[id], id);
+    }
+
+    for (auto& id : primary_inputs_) {
+        id = remap(id);
+    }
+    for (auto& id : primary_outputs_) {
+        id = remap(id);
+    }
+    for (auto& id : wires_) {
+        id = remap(id);
+    }
+    for (auto& gate : gates_) {
+        gate.output = remap(gate.output);
+        for (auto& input : gate.inputs) {
+            input = remap(input);
         }
     }
 }
 
-const std::vector<std::string>& Circuit::primaryInputs() const {
+const std::vector<NetId>& Circuit::primaryInputs() const {
     return primary_inputs_;
 }
 
-const std::vector<std::string>& Circuit::primaryOutputs() const {
+const std::vector<NetId>& Circuit::primaryOutputs() const {
     return primary_outputs_;
 }
 
-const std::vector<std::string>& Circuit::wires() const {
+const std::vector<NetId>& Circuit::wires() const {
     return wires_;
 }
 
@@ -134,40 +184,69 @@ const std::vector<Gate>& Circuit::gates() const {
     return gates_;
 }
 
-std::vector<std::string> Circuit::netNames() const {
-    std::vector<std::string> names;
-    names.reserve(nets_.size());
-    for (const auto& entry : nets_) {
-        names.push_back(entry.first);
+const std::vector<std::string>& Circuit::netNames() const {
+    return net_names_;
+}
+
+std::size_t Circuit::netCount() const {
+    return net_names_.size();
+}
+
+const std::string& Circuit::netName(NetId id) const {
+    if (id >= net_names_.size()) {
+        throw std::out_of_range("Net id out of range");
     }
-    std::sort(names.begin(), names.end());
-    return names;
+    return net_names_[id];
 }
 
 bool Circuit::hasNet(const std::string& net) const {
-    return nets_.find(net) != nets_.end();
+    return net_lookup_.find(net) != net_lookup_.end();
 }
 
 NetType Circuit::netType(const std::string& net) const {
-    const auto it = nets_.find(net);
-    if (it == nets_.end()) {
+    const auto it = net_lookup_.find(net);
+    if (it == net_lookup_.end()) {
         return NetType::Unknown;
+    }
+    return netType(it->second);
+}
+
+NetType Circuit::netType(NetId id) const {
+    if (id >= net_types_.size()) {
+        return NetType::Unknown;
+    }
+    return net_types_[id];
+}
+
+NetId Circuit::netId(const std::string& net) const {
+    const auto it = net_lookup_.find(net);
+    if (it == net_lookup_.end()) {
+        return std::numeric_limits<NetId>::max();
     }
     return it->second;
 }
 
-void Circuit::registerNet(const std::string& net, NetType type) {
+NetId Circuit::ensureNet(const std::string& net, NetType type) {
+    return registerNet(net, type);
+}
+
+NetId Circuit::registerNet(const std::string& net, NetType type) {
     if (net.empty()) {
-        return;
+        return std::numeric_limits<NetId>::max();
     }
-    auto it = nets_.find(net);
-    if (it == nets_.end()) {
-        nets_.emplace(net, type);
-        return;
+    auto it = net_lookup_.find(net);
+    if (it == net_lookup_.end()) {
+        NetId id = net_names_.size();
+        net_lookup_.emplace(net, id);
+        net_names_.push_back(net);
+        net_types_.push_back(type);
+        return id;
     }
-    if (it->second == NetType::Wire && type != NetType::Wire) {
-        it->second = type;
+    const NetId id = it->second;
+    if (net_types_[id] == NetType::Wire && type != NetType::Wire) {
+        net_types_[id] = type;
     }
+    return id;
 }
 
 }  // namespace core

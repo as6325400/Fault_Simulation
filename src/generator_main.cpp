@@ -121,12 +121,13 @@ int main(int argc, char** argv) {
         std::vector<io::PatternRow> rows;
         rows.reserve(patterns.size());
         for (std::size_t i = 0; i < patterns.size(); ++i) {
-            output << patterns[i].toString() << " | ";
+            output << patterns[i].toString(circuit) << " | ";
             io::PatternRow row;
             row.pattern = patterns[i];
             const auto golden_outputs = baseline.simulateOutputs(patterns[i]);
             for (std::size_t j = 0; j < outputs.size(); ++j) {
-                output << outputs[j] << '=' << golden_outputs[j];
+                const std::string& net_name = circuit.netName(outputs[j]);
+                output << net_name << '=' << golden_outputs[j];
                 row.provided_outputs[outputs[j]] = golden_outputs[j];
                 if (j + 1 != outputs.size()) {
                     output << ", ";

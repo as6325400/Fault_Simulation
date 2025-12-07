@@ -12,8 +12,8 @@ SimulationResult Simulator::simulate(const Pattern& pattern) const {
 
 SimulationResult Simulator::simulateFault(const Pattern& pattern,
                                           const FaultSpec& fault) const {
-    if (!circuit_.hasNet(fault.net)) {
-        throw std::runtime_error("Fault references unknown net: " + fault.net);
+    if (fault.net == std::numeric_limits<NetId>::max() || fault.net >= circuit_.netCount()) {
+        throw std::runtime_error("Fault references unknown net");
     }
     if (fault.value != 0 && fault.value != 1) {
         throw std::runtime_error("Fault value must be binary (0/1)");
@@ -89,17 +89,19 @@ int Simulator::evaluateGateValue(GateType type, const std::vector<int>& values) 
 
 SimulationResult Simulator::simulateInternal(const Pattern& pattern,
                                              const FaultSpec* fault) const {
-    std::unordered_map<std::string, int> values;
-    values.reserve(circuit_.primaryInputs().size() + circuit_.gates().size());
+    std::vector<int> values(circuit_.netCount(), -1);
 
-    auto isForcedNet = [&](const std::string& net) {
+    auto isForcedNet = [&](NetId net) {
         return fault != nullptr && net == fault->net;
     };
 
     // Seed primary inputs.
     for (const auto& entry : pattern.assignments) {
         if (entry.value != 0 && entry.value != 1) {
-            throw std::runtime_error("Pattern contains non-binary value for net: " + entry.net);
+            throw std::runtime_error("Pattern contains non-binary value for net");
+        }
+        if (entry.net == std::numeric_limits<NetId>::max() || entry.net >= values.size()) {
+            throw std::runtime_error("Pattern references unknown net");
         }
         int value = entry.value;
         if (isForcedNet(entry.net)) {
@@ -109,12 +111,12 @@ SimulationResult Simulator::simulateInternal(const Pattern& pattern,
     }
 
     for (const auto& pi : circuit_.primaryInputs()) {
-        if (values.find(pi) == values.end()) {
-            throw std::runtime_error("Pattern missing assignment for primary input: " + pi);
+        if (values[pi] == -1) {
+            throw std::runtime_error("Pattern missing assignment for primary input");
         }
     }
 
-    if (fault && values.find(fault->net) == values.end()) {
+    if (fault && values[fault->net] == -1) {
         values[fault->net] = fault->value;
     }
 
@@ -145,17 +147,16 @@ SimulationResult Simulator::simulateInternal(const Pattern& pattern,
     const auto& outputs = circuit_.primaryOutputs();
     result.primary_outputs.reserve(outputs.size());
     for (const auto& output : outputs) {
-        auto it = values.find(output);
-        if (it == values.end()) {
-            throw std::runtime_error("Unable to resolve primary output: " + output);
+        if (output >= values.size() || values[output] == -1) {
+            throw std::runtime_error("Unable to resolve primary output");
         }
-        result.primary_outputs.push_back(it->second);
+        result.primary_outputs.push_back(values[output]);
     }
     return result;
 }
 
 bool Simulator::tryEvaluateGate(const Gate& gate,
-                                std::unordered_map<std::string, int>& values,
+                                std::vector<int>& values,
                                 const FaultSpec* fault) const {
     if (fault && gate.output == fault->net) {
         values[gate.output] = fault->value;
@@ -164,9 +165,9 @@ bool Simulator::tryEvaluateGate(const Gate& gate,
 
     std::vector<int> input_values;
     input_values.reserve(gate.inputs.size());
-    for (const auto& net : gate.inputs) {
-        auto it = values.find(net);
-        if (it == values.end()) {
+    for (NetId net : gate.inputs) {
+        const int value = values[net];
+        if (value == -1) {
             if (fault && net == fault->net) {
                 values[net] = fault->value;
                 input_values.push_back(fault->value);
@@ -174,7 +175,7 @@ bool Simulator::tryEvaluateGate(const Gate& gate,
             }
             return false;
         }
-        input_values.push_back(it->second);
+        input_values.push_back(value);
     }
 
     const int gate_value = evaluateGateValue(gate.type, input_values);
