@@ -52,19 +52,25 @@ int main(int argc, char** argv) {
     const std::string output_path = argv[2];
 
     try {
+        std::cerr << "Parsing circuit...\n";
         const std::string circuit_file = circuitFileName(circuit_arg);
         const std::string base_name = circuitBaseName(circuit_file);
         const std::string circuit_path = "testcases/" + circuit_file;
         const std::string pattern_path = "testcases/" + base_name + ".in";
 
         auto circuit = io::parseCircuit(circuit_path);
+        std::cerr << "Loading patterns...\n";
         auto rows = io::loadPatterns(circuit, pattern_path);
 
-        algorithm::BitParallelSimulator bit(circuit);
-        algorithm::BaselineSimulator baseline(circuit);
-        
+        algorithm::BitParallelSimulator bit(circuit, rows);
+        algorithm::BaselineSimulator baseline(circuit, rows);
+
+        std::cerr << "Precomputing answers...\n";
+        bit.start();
+
+        std::cerr << "Writing output...\n";
         // 擇一使用 看要用什麼演算法就丟哪個 object 進去
-        io::writeAnswerFile(circuit, rows, baseline, output_path);
+        io::writeAnswerFile(bit, output_path);
     } catch (const std::exception& ex) {
         std::cerr << "Error: " << ex.what() << '\n';
         return EXIT_FAILURE;

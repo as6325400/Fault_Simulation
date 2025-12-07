@@ -110,8 +110,6 @@ int main(int argc, char** argv) {
         auto circuit = io::parseCircuit(circuit_path);
         core::PatternGenerator generator(circuit, seed);
         auto patterns = generator.generate(pattern_count);
-        algorithm::BaselineSimulator baseline(circuit);
-        algorithm::BitParallelSimulator bit(circuit);
 
         std::ofstream output(output_path);
         if (!output) {
@@ -120,6 +118,9 @@ int main(int argc, char** argv) {
         const auto& outputs = circuit.primaryOutputs();
         std::vector<io::PatternRow> rows;
         rows.reserve(patterns.size());
+        algorithm::BaselineSimulator baseline(circuit, rows);
+        algorithm::BitParallelSimulator bit(circuit, rows);
+
         for (std::size_t i = 0; i < patterns.size(); ++i) {
             output << patterns[i].toString(circuit) << " | ";
             io::PatternRow row;
@@ -139,8 +140,10 @@ int main(int argc, char** argv) {
         std::cout << "Wrote " << patterns.size() << " patterns for " << circuit_file << " to "
                   << output_path << '\n';
 
+        bit.start();
+
         const std::string ans_path = "testcases/" + circuitBaseName(circuit_file) + ".ans";
-        io::writeAnswerFile(circuit, rows, bit, ans_path);
+        io::writeAnswerFile(bit, ans_path);
         std::cout << "Wrote fault answers to " << ans_path << '\n';
         const std::string sha_path = ans_path + ".sha";
         writeShaFile(ans_path, sha_path);

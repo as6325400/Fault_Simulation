@@ -12,15 +12,14 @@ namespace algorithm {
 
 class BaselineSimulator : public FaultSimulator {
 public:
-    explicit BaselineSimulator(const core::Circuit& circuit);
+    BaselineSimulator(const core::Circuit& circuit, const std::vector<io::PatternRow>& rows);
     ~BaselineSimulator() override = default;
 
-    const std::vector<std::string>& netNames() const override;
     std::vector<int> simulateOutputs(const core::Pattern& pattern) const;
-    std::vector<FaultEvaluation> evaluate(const core::Pattern& pattern) const override;
+    std::vector<FaultEvaluation> evaluate(const core::Pattern& pattern) const;
+    void start() override;
 
 private:
-    std::vector<std::string> net_names_;
     core::Simulator simulator_;
 };
 

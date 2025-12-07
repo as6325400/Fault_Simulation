@@ -65,14 +65,29 @@ make            # 產出 bin/main 與 generator/pattern
 
 ## 演算法擴充指南
 
-- Fault 模擬器介面位於 `src/algorithm/fault_simulator.hpp`，定義 `netNames()` 與 `evaluate(pattern)` 兩個虛擬函式。任何新演算法只要繼承這個 base class 並實作上述方法即可接入整套流程。
-- 目前提供：
-  - `BaselineSimulator`：序列 stuck-at 模擬，用於生成 `.in` 的 golden output。
-  - `BitParallelSimulator`：64-bit 併行 stuck-at 模擬，產生 `.ans`。
-- 若要加入新演算法：
-  1. 在 `src/algorithm/` 建立新的類別，繼承 `FaultSimulator`。
-  2. 在 `main`、`generator` 或其他呼叫處 include 新類別並建立物件。
-  3. 將物件（以 `FaultSimulator&`）傳給 `io::writeAnswerFile()`，即可產生新的 `.ans`。
+- 共用介面在 `src/algorithm/fault_simulator.hpp`：base 建構子需要 `Circuit` 以及 pattern rows 的 reference，會記住 net 名稱並依 pattern 數預配 `answers`。`start()` 是純虛函式，交由子類自行決定要如何批次跑（可平行、GPU、MPI 等）。若需要逐筆模式，可自訂 `evaluate` 並在 `start()` 中呼叫。
+- 填答案表：呼叫 `answers.set(pattern_id, net_id, stuck_at_0, equal)`，分別填入每個 pattern/net 的 stuck-at-0、stuck-at-1 結果；兩個 bit 都填完後 `has(pattern_id)` 才會回報完成。若你一次拿到整個 `std::vector<FaultEvaluation>`，也可自行迴圈呼叫 `set`。
+- 內建演算法：
+  - `BaselineSimulator`：序列 stuck-at，產生 golden output。
+  - `BitParallelSimulator`：64-bit 併行 stuck-at，產生 `.ans`。
+- 新增演算法的步驟：
+  1. 在 `src/algorithm/` 建類別繼承 `FaultSimulator`，建構子呼叫 `FaultSimulator(circuit, rows)` 並存下需要的資料。
+  2. 覆寫 `start()`（必要），在裡面決定如何處理 `rows_` / `patternAt()` 並填入 `answers`。可搭配 `evaluate` 或自行實作平行批次。
+  3. 在 `main`、`generator_main` 或其他呼叫點建立你的模擬器物件，先呼叫 `start()`，再以 `FaultSimulator&` 傳給 `io::writeAnswerFile()`。
+
+### 演算法接入流程圖（文字版）
+
+```
+parseCircuit(.v) → loadPatterns(.in) → 準備 patterns 向量
+       ↓
+建立自訂 FaultSimulator(circuit, patterns)
+       ↓
+呼叫 simulator.start() （內部可平行/批次填 answers）
+       ↓
+io::writeAnswerFile(simulator, output_path)
+       ↓
+scripts/judge.sh 比對 .ans.sha
+```
 
 ## `.ans` Output 格式
 

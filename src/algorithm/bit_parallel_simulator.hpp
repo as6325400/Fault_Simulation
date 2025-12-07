@@ -11,11 +11,11 @@ namespace algorithm {
 
 class BitParallelSimulator : public FaultSimulator {
 public:
-    explicit BitParallelSimulator(const core::Circuit& circuit);
+    BitParallelSimulator(const core::Circuit& circuit, const std::vector<io::PatternRow>& rows);
     ~BitParallelSimulator() override = default;
 
-    std::vector<FaultEvaluation> evaluate(const core::Pattern& pattern) const override;
-    const std::vector<std::string>& netNames() const override;
+    std::vector<FaultEvaluation> evaluate(const core::Pattern& pattern) const;
+    void start() override;
 
 private:
     struct ChunkFault {
@@ -27,7 +27,6 @@ private:
                                     const std::vector<ChunkFault>& chunk) const;
 
     const core::Circuit& circuit_;
-    std::vector<std::string> net_names_;
     std::vector<std::size_t> output_indices_;
 };
 

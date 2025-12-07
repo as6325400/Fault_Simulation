@@ -3,29 +3,9 @@
 #include <fstream>
 #include <stdexcept>
 
-namespace {
-
-std::vector<int> extractOutputs(const io::PatternRow& row, const core::Circuit& circuit) {
-    std::vector<int> outputs;
-    const auto& po = circuit.primaryOutputs();
-    outputs.reserve(po.size());
-    for (const auto& net : po) {
-        const auto it = row.provided_outputs.find(net);
-        if (it == row.provided_outputs.end()) {
-            throw std::runtime_error("Pattern missing golden output for net " + circuit.netName(net));
-        }
-        outputs.push_back(it->second);
-    }
-    return outputs;
-}
-
-}  // namespace
-
 namespace io {
 
-void writeAnswerFile(const core::Circuit& circuit, const std::vector<PatternRow>& rows,
-                     const algorithm::FaultSimulator& simulator,
-                     const std::string& output_path) {
+void writeAnswerFile(const algorithm::FaultSimulator& simulator, const std::string& output_path) {
     const auto& nets = simulator.netNames();
 
     std::ofstream output(output_path, std::ios::binary);
@@ -35,17 +15,21 @@ void writeAnswerFile(const core::Circuit& circuit, const std::vector<PatternRow>
 
     output << "# pattern_index net stuck_at_0_eq stuck_at_1_eq\n";
 
-    for (std::size_t i = 0; i < rows.size(); ++i) {
-        const auto golden_outputs = extractOutputs(rows[i], circuit);
-        const auto fault_results = simulator.evaluate(rows[i].pattern);
-        if (fault_results.size() != nets.size()) {
-            throw std::runtime_error("Bit-parallel simulation returned inconsistent result size");
+    const std::size_t pattern_count = simulator.patternCount();
+    for (std::size_t i = 0; i < pattern_count; ++i) {
+        if (!simulator.answers.has(i)) {
+            throw std::runtime_error("Answer table missing data for pattern " + std::to_string(i));
+        }
+        const auto& fault_results_raw = simulator.answers.get(i);
+        std::vector<algorithm::FaultEvaluation> fault_results = fault_results_raw;
+        if (fault_results.size() < nets.size()) {
+            throw std::runtime_error("Answer size mismatch for pattern " + std::to_string(i));
         }
 
-        for (std::size_t net_idx = 0; net_idx < nets.size(); ++net_idx) {
-            output << i << ' ' << nets[net_idx] << ' '
-                   << (fault_results[net_idx].stuck0_eq ? 1 : 0) << ' '
-                   << (fault_results[net_idx].stuck1_eq ? 1 : 0) << '\n';
+        for (std::size_t net_id = 0; net_id < nets.size(); ++net_id) {
+            output << i << ' ' << nets[net_id] << ' '
+                   << (fault_results[net_id].stuck0_eq ? 1 : 0) << ' '
+                   << (fault_results[net_id].stuck1_eq ? 1 : 0) << '\n';
         }
     }
 }
