@@ -1,5 +1,6 @@
 #pragma once
 
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -7,6 +8,11 @@
 #include "algorithm/fault_types.hpp"
 #include "core/pattern_generator.hpp"
 #include "io/pattern_loader.hpp"
+
+#define FAULT_SIMULATOR_DEBUG_HELPERS(OP) \
+    OP(patternAt)                         \
+    OP(netNames)                          \
+    OP(answers)
 
 namespace algorithm {
 
@@ -85,11 +91,58 @@ public:
 
     mutable AnswerTable answers;
 
+    struct IOShape {
+        std::size_t pattern_count{0};
+        std::size_t net_count{0};
+        std::size_t primary_input_count{0};
+        std::size_t primary_output_count{0};
+    };
+
+    IOShape ioShape() const {
+        return IOShape{
+            .pattern_count = rows_.size(),
+            .net_count = net_names_.size(),
+            .primary_input_count = circuit_.primaryInputs().size(),
+            .primary_output_count = circuit_.primaryOutputs().size(),
+        };
+    }
+
+    std::string describeIOShape() const {
+        const IOShape shape = ioShape();
+        std::ostringstream oss;
+        oss << "Circuit: " << circuit_.name() << '\n';
+        oss << "Patterns: " << shape.pattern_count << '\n';
+        oss << "Nets: " << shape.net_count << " (PI=" << shape.primary_input_count
+            << ", PO=" << shape.primary_output_count
+            << ", wires=" << circuit_.wires().size() << ")\n";
+        oss << "Answer table: " << shape.pattern_count << " x " << shape.net_count << " x 2 entries\n";
+        oss << "Helpers: " << helperSummary() << '\n';
+        return oss.str();
+    }
+
 protected:
     const core::Circuit& circuit_;
     const std::vector<io::PatternRow>& rows_;
     std::vector<core::Pattern> patterns_cache_;
     std::vector<std::string> net_names_;
+
+private:
+    static std::string helperSummary() {
+        std::ostringstream oss;
+        bool first = true;
+#define DESCRIBE_HELPER(name)           \
+        (void)&FaultSimulator::name;    \
+        if (!first) {                   \
+            oss << ", ";                \
+        }                               \
+        first = false;                  \
+        oss << #name;
+        FAULT_SIMULATOR_DEBUG_HELPERS(DESCRIBE_HELPER)
+#undef DESCRIBE_HELPER
+        return oss.str();
+    }
 };
+
+#undef FAULT_SIMULATOR_DEBUG_HELPERS
 
 }  // namespace algorithm

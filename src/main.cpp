@@ -65,6 +65,8 @@ int main(int argc, char** argv) {
         algorithm::BitParallelSimulator bit(circuit, rows);
         algorithm::BaselineSimulator baseline(circuit, rows);
 
+        // std::cout << baseline.describeIOShape() << '\n';
+
         std::cerr << "Precomputing answers...\n";
         bit.start();
 
