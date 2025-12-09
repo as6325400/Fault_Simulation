@@ -7,8 +7,9 @@
 #include <string>
 
 #include "algorithm/baseline_simulator.hpp"
-#include "algorithm/bit_parallel_simulator.hpp"
+#include "algorithm/batch_64_baseline.hpp"
 #include "algorithm/batch_baseline.hpp"
+#include "algorithm/bit_parallel_simulator.hpp"
 #include "io/answer_writer.hpp"
 #include "io/circuit_parser.hpp"
 #include "io/pattern_loader.hpp"
@@ -61,12 +62,27 @@ int main(int argc, char** argv) {
 
         auto circuit = io::parseCircuit(circuit_path);
         auto rows = io::loadPatterns(circuit, pattern_path);
-        
-        #ifdef BATCHBASELINE
-        algorithm::BatchBaselineSimulator batchbaseline(circuit, rows);
-        batchbaseline.start();
-        io::writeAnswerFile(batchbaseline, output_path);
-        #endif
+
+        // Select simulator via compile-time flag. Default keeps BatchBaseline for prior behavior.
+#ifdef BATCH64
+        algorithm::Batch64BaselineSimulator simulator(circuit, rows);
+#elif defined(BATCHBASELINE)
+        algorithm::BatchBaselineSimulator simulator(circuit, rows);
+#elif defined(BITPARALLEL)
+        algorithm::BitParallelSimulator simulator(circuit, rows);
+#elif defined(BASELINE)
+        algorithm::BaselineSimulator simulator(circuit, rows);
+#else
+        algorithm::BatchBaselineSimulator simulator(circuit, rows);
+#endif
+
+        std::cout << simulator.describeIOShape() << '\n';
+
+        std::cerr << "Precomputing answers...\n";
+        simulator.start();
+
+        std::cerr << "Writing output...\n";
+        io::writeAnswerFile(simulator, output_path);
 
     } catch (const std::exception& ex) {
         std::cerr << "Error: " << ex.what() << '\n';
