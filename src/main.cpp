@@ -8,6 +8,7 @@
 
 #include "algorithm/baseline_simulator.hpp"
 #include "algorithm/bit_parallel_simulator.hpp"
+#include "algorithm/batch_baseline.hpp"
 #include "io/answer_writer.hpp"
 #include "io/circuit_parser.hpp"
 #include "io/pattern_loader.hpp"
@@ -59,20 +60,14 @@ int main(int argc, char** argv) {
         const std::string pattern_path = "testcases/" + base_name + ".in";
 
         auto circuit = io::parseCircuit(circuit_path);
-        std::cerr << "Loading patterns...\n";
         auto rows = io::loadPatterns(circuit, pattern_path);
+        
+        #ifdef BATCHBASELINE
+        algorithm::BatchBaselineSimulator batchbaseline(circuit, rows);
+        batchbaseline.start();
+        io::writeAnswerFile(batchbaseline, output_path);
+        #endif
 
-        algorithm::BitParallelSimulator bit(circuit, rows);
-        algorithm::BaselineSimulator baseline(circuit, rows);
-
-        // std::cout << baseline.describeIOShape() << '\n';
-
-        std::cerr << "Precomputing answers...\n";
-        bit.start();
-
-        std::cerr << "Writing output...\n";
-        // 擇一使用 看要用什麼演算法就丟哪個 object 進去
-        io::writeAnswerFile(bit, output_path);
     } catch (const std::exception& ex) {
         std::cerr << "Error: " << ex.what() << '\n';
         return EXIT_FAILURE;
