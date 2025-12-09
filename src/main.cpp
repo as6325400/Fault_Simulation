@@ -8,6 +8,7 @@
 
 #include "algorithm/baseline_simulator.hpp"
 #include "algorithm/batch1_mt_fault.hpp"
+#include "algorithm/batch64_mt_fault.hpp"
 #include "algorithm/batch_64_baseline.hpp"
 #include "algorithm/batch_baseline.hpp"
 #include "algorithm/bit_parallel_simulator.hpp"
@@ -65,7 +66,9 @@ int main(int argc, char** argv) {
         auto rows = io::loadPatterns(circuit, pattern_path);
 
         // Select simulator via compile-time flag. Default keeps BatchBaseline for prior behavior.
-#ifdef BATCH1_MT_FAULT
+#ifdef BATCH64_MT_FAULT
+        algorithm::Batch64MtFaultSimulator simulator(circuit, rows);
+#elif defined(BATCH1_MT_FAULT)
         algorithm::Batch1MtFaultSimulator simulator(circuit, rows);
 #elif defined(BATCH64)
         algorithm::Batch64BaselineSimulator simulator(circuit, rows);
