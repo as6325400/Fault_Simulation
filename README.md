@@ -108,6 +108,6 @@ scripts/judge.sh 比對 .ans.sha
 - [x] single pattern and single fault wire in a batch
 - [ ] single pattern and mutiple fault wire in a batch (CPU)
 - [ ] single pattern and mutiple fault wire in a batch (GPU)
-- [ ] mutiple pattern and single fault wire in a batch
+- [x] mutiple pattern and single fault wire in a batch
 - [ ] mutiple pattern and mutiple fault wire in a batch (CPU)
 - [ ] mutiple pattern and mutiple fault wire in a batch (GPU)
