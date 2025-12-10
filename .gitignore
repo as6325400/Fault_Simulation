@@ -2,3 +2,5 @@
 /build
 /generator
 /testcases/*.in
+/testcases/*.ans
+/testcases/*.ans.sha
