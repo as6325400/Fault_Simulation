@@ -5,6 +5,7 @@
 #include <exception>
 #include <iostream>
 #include <string>
+#include <sys/time.h>
 
 #include "algorithm/baseline_simulator.hpp"
 #include "algorithm/batch1_mt_fault.hpp"
@@ -39,6 +40,12 @@ std::string circuitBaseName(const std::string& file_name) {
     return file_name;
 }
 
+double getTimeStamp() {
+    struct timeval tv;
+    gettimeofday(&tv, nullptr);
+    return static_cast<double>(tv.tv_usec) / 1000000.0 + tv.tv_sec;
+}
+
 void printUsage(const char* program) {
     std::cerr << "Usage: " << program << " <circuit> <output-path>\n";
     std::cerr << "  circuit: testcase basename or .v file under testcases/\n";
@@ -67,7 +74,7 @@ int main(int argc, char** argv) {
 
         // Select simulator via compile-time flag. Default keeps BatchBaseline for prior behavior.
 #ifdef BATCH64_MT_FAULT
-        algorithm::Batch64MtFaultSimulator simulator(circuit, rows);
+        algorithm::Batch64MtFaultSimulator simulator(circuit, rows, 24);
 #elif defined(BATCH1_MT_FAULT)
         algorithm::Batch1MtFaultSimulator simulator(circuit, rows);
 #elif defined(BATCH64)
@@ -85,7 +92,11 @@ int main(int argc, char** argv) {
         std::cout << simulator.describeIOShape() << '\n';
 
         std::cerr << "Precomputing answers...\n";
+        const double compute_start = getTimeStamp();
         simulator.start();
+        const double compute_end = getTimeStamp();
+        const double compute_seconds = compute_end - compute_start;
+        std::cerr << "compute_time_s " << compute_seconds << '\n';
 
         std::cerr << "Writing output...\n";
         io::writeAnswerFile(simulator, output_path);

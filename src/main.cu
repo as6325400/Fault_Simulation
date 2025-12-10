@@ -5,12 +5,19 @@
 #include <exception>
 #include <iostream>
 #include <string>
+#include <sys/time.h>
 
 #include "algorithm/batch1_gpu_fault.hpp"
 #include "algorithm/batch32_gpu_fault.hpp"
 #include "io/answer_writer.hpp"
 #include "io/circuit_parser.hpp"
 #include "io/pattern_loader.hpp"
+
+double getTimeStamp() {
+    struct timeval tv;
+    gettimeofday(&tv, NULL);
+    return (double) tv.tv_usec/1000000 + tv.tv_sec;
+}
 
 namespace {
 
@@ -67,7 +74,11 @@ int main(int argc, char** argv) {
 #endif
 
         std::cout << simulator.describeIOShape() << '\n';
+        const double compute_start = getTimeStamp();
         simulator.start();
+        const double compute_end = getTimeStamp();
+        const double compute_seconds = compute_end - compute_start;
+        std::cerr << "compute_time_s " << compute_seconds << '\n';
         io::writeAnswerFile(simulator, output_path);
 
     } catch (const std::exception& ex) {

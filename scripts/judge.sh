@@ -53,21 +53,25 @@ detail_lines=()
 print_table() {
     local header_c="Circuit"
     local header_r="Result"
-    local header_t="Time(s)"
+    local header_rt="Real(s)"
+    local header_ct="Compute(s)"
     local max_c=${#header_c}
     local max_r=${#header_r}
-    local max_t=${#header_t}
-    local c r t
+    local max_rt=${#header_rt}
+    local max_ct=${#header_ct}
+    local c r rt ct
     for row in "${table_rows[@]}"; do
-        IFS='|' read -r c r t <<<"${row}"
+        IFS='|' read -r c r rt ct <<<"${row}"
         [[ ${#c} -gt ${max_c} ]] && max_c=${#c}
         [[ ${#r} -gt ${max_r} ]] && max_r=${#r}
-        [[ ${#t} -gt ${max_t} ]] && max_t=${#t}
+        [[ ${#rt} -gt ${max_rt} ]] && max_rt=${#rt}
+        [[ ${#ct} -gt ${max_ct} ]] && max_ct=${#ct}
     done
 
     local pad_c=$((max_c + 2))
     local pad_r=$((max_r + 2))
-    local pad_t=$((max_t + 2))
+    local pad_rt=$((max_rt + 2))
+    local pad_ct=$((max_ct + 2))
 
     repeat_char() {
         local count="$1"
@@ -84,16 +88,18 @@ print_table() {
         printf "+"
         repeat_char "${pad_r}" "-"
         printf "+"
-        repeat_char "${pad_t}" "-"
+        repeat_char "${pad_rt}" "-"
+        printf "+"
+        repeat_char "${pad_ct}" "-"
         printf "+\n"
     }
 
     print_border
-    printf "| %-*s | %-*s | %-*s |\n" "${max_c}" "${header_c}" "${max_r}" "${header_r}" "${max_t}" "${header_t}"
+    printf "| %-*s | %-*s | %-*s | %-*s |\n" "${max_c}" "${header_c}" "${max_r}" "${header_r}" "${max_rt}" "${header_rt}" "${max_ct}" "${header_ct}"
     print_border
     for row in "${table_rows[@]}"; do
-        IFS='|' read -r c r t <<<"${row}"
-        printf "| %-*s | %-*s | %-*s |\n" "${max_c}" "${c}" "${max_r}" "${r}" "${max_t}" "${t}"
+        IFS='|' read -r c r rt ct <<<"${row}"
+        printf "| %-*s | %-*s | %-*s | %-*s |\n" "${max_c}" "${c}" "${max_r}" "${r}" "${max_rt}" "${rt}" "${max_ct}" "${ct}"
     done
     print_border
 }
@@ -109,7 +115,7 @@ for circuit in "${circuits[@]}"; do
     input_path="testcases/${circuit}.in"
     ans_sha_path="testcases/${circuit}.ans.sha"
     if [[ ! -f "${input_path}" || ! -f "${ans_sha_path}" ]]; then
-        table_rows+=("${circuit}|MISSING|N/A")
+        table_rows+=("${circuit}|MISSING|N/A|N/A")
         detail_lines+=("${circuit}: missing input or answer file.")
         status=1
         render_table
@@ -125,11 +131,13 @@ for circuit in "${circuits[@]}"; do
     set -e
 
     real_time="$(grep '^real' "${time_log}" | awk '{print $2}' || echo 'N/A')"
+    compute_time="$(grep '^compute_time_s' "${time_log}" | awk '{print $2}' | tail -n 1)"
+    [[ -z "${compute_time}" ]] && compute_time="N/A"
     rm -f "${time_log}"
 
     if [[ ${prog_status} -ne 0 ]]; then
         rm -f "${temp_out}"
-        table_rows+=("${circuit}|FAILED|${real_time}")
+        table_rows+=("${circuit}|FAILED|${real_time}|${compute_time}")
         detail_lines+=("${circuit}: program exited with status ${prog_status}.")
         status=1
         render_table
@@ -139,9 +147,9 @@ for circuit in "${circuits[@]}"; do
     digest="$("${HASH_CMD[@]}" "${temp_out}" | awk '{print $1}')"
     expected="$(tr -d '\r\n' < "${ans_sha_path}")"
     if [[ "${digest}" == "${expected}" ]]; then
-        table_rows+=("${circuit}|OK|${real_time}")
+        table_rows+=("${circuit}|OK|${real_time}|${compute_time}")
     else
-        table_rows+=("${circuit}|MISMATCH|${real_time}")
+        table_rows+=("${circuit}|MISMATCH|${real_time}|${compute_time}")
         detail_lines+=("${circuit}: expected ${expected}, actual ${digest}.")
         status=1
     fi
