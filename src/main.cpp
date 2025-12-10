@@ -74,7 +74,7 @@ int main(int argc, char** argv) {
 
         // Select simulator via compile-time flag. Default keeps BatchBaseline for prior behavior.
 #ifdef BATCH64_MT_FAULT
-        algorithm::Batch64MtFaultSimulator simulator(circuit, rows, 24);
+        algorithm::Batch64MtFaultSimulator simulator(circuit, rows, 12);
 #elif defined(BATCH1_MT_FAULT)
         algorithm::Batch1MtFaultSimulator simulator(circuit, rows);
 #elif defined(BATCH64)

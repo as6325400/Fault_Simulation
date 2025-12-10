@@ -12,8 +12,10 @@ GPU_TARGET := $(BIN_DIR)/main_gpu
 GENERATOR_BIN := $(GEN_DIR)/pattern
 
 # Allow invoking `make SOMEFLAG` to compile with -DSOMEFLAG automatically.
-DEFAULT_GOALS := all clean
-EXTRA_GOALS := $(filter-out $(DEFAULT_GOALS),$(MAKECMDGOALS))
+NON_FLAG_GOALS := all clean cpu gpu generator
+BUILD_ONLY_GOALS := all cpu gpu generator
+EXTRA_GOALS := $(filter-out $(NON_FLAG_GOALS),$(MAKECMDGOALS))
+PRIMARY_BUILD_GOAL := $(or $(firstword $(filter $(BUILD_ONLY_GOALS),$(MAKECMDGOALS))),all)
 CPPFLAGS += $(addprefix -D,$(EXTRA_GOALS))
 
 ALL_SRCS := $(shell find $(SRC_DIR) -name '*.cpp')
@@ -29,13 +31,19 @@ GPU_FAULT_SIM_OBJ := $(GPU_FAULT_SIM_SRC:$(SRC_DIR)/%.cu=$(BUILD_DIR)/%.cu.o)
 GENERATOR_OBJ := $(GENERATOR_SRC:$(SRC_DIR)/%.cpp=$(BUILD_DIR)/%.o)
 CUDA_OBJS := $(filter-out $(GPU_FAULT_SIM_OBJ), $(CUDA_SRCS:$(SRC_DIR)/%.cu=$(BUILD_DIR)/%.cu.o))
 
-.PHONY: all clean $(EXTRA_GOALS)
+.PHONY: all clean cpu gpu generator $(EXTRA_GOALS)
 .DEFAULT_GOAL := all
 
 all: $(TARGET) $(GPU_TARGET) $(GENERATOR_BIN)
 
-# Any extra goal simply builds the binaries with the corresponding -D flag(s).
-$(EXTRA_GOALS): all
+cpu: $(TARGET)
+
+gpu: $(GPU_TARGET)
+
+generator: $(GENERATOR_BIN)
+
+# Any extra goal simply builds the selected binaries with the corresponding -D flag(s).
+$(EXTRA_GOALS): $(PRIMARY_BUILD_GOAL)
 
 $(TARGET): $(LIB_OBJS) $(FAULT_SIM_OBJ)
 	@mkdir -p $(dir $@)
