@@ -141,91 +141,111 @@ __device__ uint32_t runFault(int fault_net,
 }
 
 template <int BITS>
-__global__ void simulateFaultKernel(const DeviceGate* gates,
-                                    const int* gate_inputs,
-                                    const int* gate_order,
+__global__ void simulateFaultKernel(const DeviceGate* __restrict__ gates,
+                                    const int* __restrict__ gate_inputs,
+                                    const int* __restrict__ gate_order,
                                     int gate_count,
-                                    const int* level_index,
-                                    const int* level_offsets,
+                                    const int* __restrict__ level_index,
+                                    const int* __restrict__ level_offsets,
                                     int level_count,
-                                    const int* primary_inputs,
+                                    const int* __restrict__ primary_inputs,
                                     int primary_input_count,
-                                    const int* outputs,
+                                    const int* __restrict__ outputs,
                                     int output_count,
-                                    const uint32_t* base_matrix,
-                                    const uint32_t* batch_masks,
-                                    const uint32_t* provided_matrix,
-                                    uint32_t* stuck0_matrix,
-                                    uint32_t* stuck1_matrix,
-                                    uint32_t* values_matrix,
+                                    const uint32_t* __restrict__ base_matrix,
+                                    const uint32_t* __restrict__ batch_masks,
+                                    const uint32_t* __restrict__ provided_matrix,
+                                    uint32_t* __restrict__ stuck0_matrix,
+                                    uint32_t* __restrict__ stuck1_matrix,
+                                    uint32_t* __restrict__ values_matrix,
                                     int net_count,
                                     int batch_count,
-                                    int use_shared_values) {
-    const unsigned warp_mask = 0xFFFFFFFFu;
+                                    int use_shared_values,
+                                    int logical_warps,
+                                    int warps_per_block) {
+    const int lane = static_cast<int>(threadIdx.x) & (warpSize - 1);
+    const int warp_in_block = static_cast<int>(threadIdx.x) >> 5;
+    const int logical_warp = static_cast<int>(blockIdx.x) * warps_per_block + warp_in_block;
+    if (warp_in_block >= warps_per_block || logical_warp >= logical_warps) {
+        return;
+    }
+    (void)gate_order;
+    (void)gate_count;
+
     uint32_t* values0 = nullptr;
     uint32_t* values1 = nullptr;
     if (use_shared_values) {
         extern __shared__ uint32_t shared_values[];
-        values0 = shared_values;
-        values1 = shared_values + net_count;
+        uint32_t* warp_base =
+            shared_values + static_cast<std::size_t>(warp_in_block) * net_count * 2;
+        values0 = warp_base;
+        values1 = warp_base + net_count;
     } else {
         uint32_t* block_base =
-            values_matrix + static_cast<std::size_t>(blockIdx.x) * net_count * 2;
+            values_matrix + static_cast<std::size_t>(logical_warp) * net_count * 2;
         values0 = block_base;
         values1 = block_base + net_count;
     }
 
-    for (int net = blockIdx.x; net < net_count; net += gridDim.x) {
+    for (int net = logical_warp; net < net_count; net += gridDim.x * warps_per_block) {
         for (int batch = 0; batch < batch_count; ++batch) {
+#if __CUDA_ARCH__ >= 350
+            const uint32_t mask = __ldg(&batch_masks[batch]);
+#else
             const uint32_t mask = batch_masks[batch];
-            const uint32_t* base_values = base_matrix + static_cast<std::size_t>(batch) * net_count;
+#endif
+            const uint32_t* base_values =
+                base_matrix + static_cast<std::size_t>(batch) * net_count;
             const uint32_t* provided_values =
                 provided_matrix ? provided_matrix + static_cast<std::size_t>(batch) * output_count
                                 : nullptr;
 
-            for (int idx = threadIdx.x; idx < primary_input_count; idx += blockDim.x) {
+            for (int idx = lane; idx < primary_input_count; idx += warpSize) {
                 const int pi = primary_inputs[idx];
+#if __CUDA_ARCH__ >= 350
+                const uint32_t v = __ldg(&base_values[pi]);
+#else
                 const uint32_t v = base_values[pi];
+#endif
                 values0[pi] = v;
                 values1[pi] = v;
             }
-            __syncwarp(warp_mask);
 
-            if (threadIdx.x == 0) {
+            if (lane == 0) {
                 values0[net] = 0u;
                 values1[net] = mask;
             }
-            __syncwarp(warp_mask);
 
             for (int level = 0; level < level_count; ++level) {
                 const int start = level_offsets[level];
                 const int end = level_offsets[level + 1];
-                for (int chunk = start; chunk < end; chunk += blockDim.x) {
-                    const int idx = chunk + threadIdx.x;
-                    if (idx < end) {
-                        const int gate_idx = level_index[idx];
-                        const DeviceGate gate = loadGate(gates, gate_idx);
-                        if (gate.output == net) {
-                            values0[gate.output] = 0u;
-                            values1[gate.output] = mask;
-                        } else {
-                            const uint32_t out0 = evalGate<BITS>(gate, gate_inputs, values0, mask);
-                            const uint32_t out1 = evalGate<BITS>(gate, gate_inputs, values1, mask);
-                            values0[gate.output] = out0;
-                            values1[gate.output] = out1;
-                        }
+                for (int idx = start + lane; idx < end; idx += warpSize) {
+                    const int gate_idx = level_index[idx];
+                    const DeviceGate gate = loadGate(gates, gate_idx);
+                    if (gate.output == net) {
+                        values0[gate.output] = 0u;
+                        values1[gate.output] = mask;
+                    } else {
+                        const uint32_t out0 = evalGate<BITS>(gate, gate_inputs, values0, mask);
+                        const uint32_t out1 = evalGate<BITS>(gate, gate_inputs, values1, mask);
+                        values0[gate.output] = out0;
+                        values1[gate.output] = out1;
                     }
-                    __syncwarp(warp_mask);
                 }
             }
 
-            if (threadIdx.x == 0) {
+            if (lane == 0) {
                 uint32_t eq0 = mask;
                 uint32_t eq1 = mask;
                 if (provided_values) {
                     for (int i = 0; i < output_count; ++i) {
                         const int o = outputs[i];
-                        const uint32_t pv = provided_values[i];
+                        const uint32_t pv =
+#if __CUDA_ARCH__ >= 350
+                            __ldg(&provided_values[i]);
+#else
+                            provided_values[i];
+#endif
                         eq0 &= ~(values0[o] ^ pv) & mask;
                         eq1 &= ~(values1[o] ^ pv) & mask;
                     }
@@ -234,7 +254,6 @@ __global__ void simulateFaultKernel(const DeviceGate* gates,
                 stuck0_matrix[out_idx] = eq0;
                 stuck1_matrix[out_idx] = eq1;
             }
-            __syncthreads();
         }
     }
 }
@@ -371,19 +390,28 @@ public:
                                   batch_masks.size() * sizeof(uint32_t),
                                   cudaMemcpyHostToDevice));
 
-        dim3 block(32);
-        const unsigned int blocks =
-            static_cast<unsigned int>(std::min<std::size_t>(workspace_blocks_, net_count));
-        dim3 grid(blocks);
+        const std::size_t logical_warps =
+            std::min<std::size_t>(workspace_blocks_, net_count);
         int shared_limit = 0;
         int device = 0;
+        int warp_width = 0;
         GPU_CUDA_CHECK(cudaGetDevice(&device));
         GPU_CUDA_CHECK(
             cudaDeviceGetAttribute(&shared_limit, cudaDevAttrMaxSharedMemoryPerBlock, device));
+        GPU_CUDA_CHECK(cudaDeviceGetAttribute(&warp_width, cudaDevAttrWarpSize, device));
+        if (warp_width <= 0) {
+            warp_width = 32;
+        }
         const std::size_t shared_needed = net_count * 2 * sizeof(uint32_t);
         // Only use shared when it fits comfortably to keep occupancy (half of the limit).
         const bool use_shared =
             shared_needed > 0 && shared_needed <= static_cast<std::size_t>(shared_limit / 2);
+        const int warps_per_block = use_shared ? 1 : 4;
+        const std::size_t blocks =
+            (logical_warps + static_cast<std::size_t>(warps_per_block) - 1) /
+            static_cast<std::size_t>(warps_per_block);
+        dim3 block(static_cast<unsigned>(warps_per_block * warp_width));
+        dim3 grid(static_cast<unsigned>(blocks));
         const std::size_t shared_bytes = use_shared ? shared_needed : 0;
         gpu_detail::simulateFaultKernel<BITS><<<grid, block, shared_bytes>>>(
             d_gates_, d_gate_inputs_, d_gate_order_, static_cast<int>(gates_.size()),
@@ -392,7 +420,7 @@ public:
             d_outputs_, static_cast<int>(outputs_.size()), d_base_matrix_, d_batch_masks_,
             out_count ? d_provided_matrix_ : nullptr, d_stuck0_matrix_, d_stuck1_matrix_,
             d_values_matrix_, static_cast<int>(net_count), static_cast<int>(batch_count),
-            use_shared ? 1 : 0);
+            use_shared ? 1 : 0, static_cast<int>(logical_warps), warps_per_block);
         GPU_CUDA_CHECK(cudaGetLastError());
         GPU_CUDA_CHECK(cudaDeviceSynchronize());
 
@@ -634,9 +662,9 @@ private:
         if (net_count == 0) {
             return;
         }
-        const std::size_t blocks = std::min<std::size_t>(workspace_blocks_, net_count);
-        const std::size_t values_elems = net_count * blocks * 2;
-        if (blocks == 0 || values_elems / net_count != blocks * 2) {
+        const std::size_t warps = std::min<std::size_t>(workspace_blocks_, net_count);
+        const std::size_t values_elems = net_count * warps * 2;
+        if (warps == 0 || values_elems / net_count != warps * 2) {
             throw std::runtime_error("Value buffer size overflow for GPU simulator");
         }
         if (values_elems > 0 && !d_values_matrix_) {
@@ -694,7 +722,7 @@ private:
     uint32_t* d_stuck1_matrix_{nullptr};
     uint32_t* d_values_matrix_{nullptr};
 
-    std::size_t workspace_blocks_{2048};
+    std::size_t workspace_blocks_{2048};  // cap on logical warps issued for the kernel
     std::size_t pattern_batches_{0};
 };
 
