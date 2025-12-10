@@ -51,7 +51,7 @@ else
     TIME_CMD=(time -p)
 fi
 
-SRUN_CMD=(srun -p nvidia -N1 -n10 --chdir="${PWD}")
+SRUN_CMD=(srun -p nvidia -N1 -c12 --chdir="${PWD}")
 
 status=0
 table_rows=()
