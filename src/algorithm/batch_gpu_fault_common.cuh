@@ -24,6 +24,11 @@ struct DeviceGate {
     int input_count{0};
     int op_kind{0};  // 0=and,1=or,2=xor,3=buf
     int invert{0};   // 1 means invert result
+    int op_code{0};  // 4-bit truth table for 2-input gates
+    uint32_t mask11{0};
+    uint32_t mask10{0};
+    uint32_t mask01{0};
+    uint32_t mask00{0};
 };
 
 inline void cudaCheck(cudaError_t err, const char* expr, const char* file, int line) {
@@ -43,6 +48,15 @@ __device__ uint32_t evalGate(const DeviceGate& gate,
                              const uint32_t* values,
                              uint32_t mask) {
     auto input_at = [&](int idx) { return values[gate_inputs[gate.input_offset + idx]]; };
+
+    if (gate.input_count == 2) {
+        const uint32_t a = input_at(0);
+        const uint32_t b = input_at(1);
+        // maskXX already precomputed to 0xFFFFFFFF or 0.
+        return ((a & b & gate.mask11) | (a & ~b & gate.mask10) | (~a & b & gate.mask01) |
+                (~a & ~b & gate.mask00)) &
+               mask;
+    }
 
     uint32_t v = 0;
     if (gate.op_kind == 0) {  // AND/NAND
@@ -73,6 +87,25 @@ __device__ uint32_t evalGate(const DeviceGate& gate,
         v &= mask;
     }
     return v;
+}
+
+__device__ __forceinline__ DeviceGate loadGate(const DeviceGate* gates, int idx) {
+    DeviceGate g;
+#if __CUDA_ARCH__ >= 350
+    g.output = __ldg(&gates[idx].output);
+    g.input_offset = __ldg(&gates[idx].input_offset);
+    g.input_count = __ldg(&gates[idx].input_count);
+    g.op_kind = __ldg(&gates[idx].op_kind);
+    g.invert = __ldg(&gates[idx].invert);
+    g.op_code = __ldg(&gates[idx].op_code);
+    g.mask11 = __ldg(&gates[idx].mask11);
+    g.mask10 = __ldg(&gates[idx].mask10);
+    g.mask01 = __ldg(&gates[idx].mask01);
+    g.mask00 = __ldg(&gates[idx].mask00);
+#else
+    g = gates[idx];
+#endif
+    return g;
 }
 
 template <int BITS>
@@ -126,16 +159,21 @@ __global__ void simulateFaultKernel(const DeviceGate* gates,
                                     uint32_t* stuck1_matrix,
                                     uint32_t* values_matrix,
                                     int net_count,
-                                    int batch_count) {
-    extern __shared__ unsigned char shmem[];
-    uint32_t* s_out0 = reinterpret_cast<uint32_t*>(shmem);
-    uint32_t* s_out1 = s_out0 + blockDim.x;
-    int* s_out_idx = reinterpret_cast<int*>(s_out1 + blockDim.x);
-    DeviceGate* s_gate = reinterpret_cast<DeviceGate*>(s_out_idx + blockDim.x);
-
-    uint32_t* block_base = values_matrix + static_cast<std::size_t>(blockIdx.x) * net_count * 2;
-    uint32_t* values0 = block_base;
-    uint32_t* values1 = block_base + net_count;
+                                    int batch_count,
+                                    int use_shared_values) {
+    const unsigned warp_mask = 0xFFFFFFFFu;
+    uint32_t* values0 = nullptr;
+    uint32_t* values1 = nullptr;
+    if (use_shared_values) {
+        extern __shared__ uint32_t shared_values[];
+        values0 = shared_values;
+        values1 = shared_values + net_count;
+    } else {
+        uint32_t* block_base =
+            values_matrix + static_cast<std::size_t>(blockIdx.x) * net_count * 2;
+        values0 = block_base;
+        values1 = block_base + net_count;
+    }
 
     for (int net = blockIdx.x; net < net_count; net += gridDim.x) {
         for (int batch = 0; batch < batch_count; ++batch) {
@@ -151,13 +189,13 @@ __global__ void simulateFaultKernel(const DeviceGate* gates,
                 values0[pi] = v;
                 values1[pi] = v;
             }
-            __syncthreads();
+            __syncwarp(warp_mask);
 
             if (threadIdx.x == 0) {
                 values0[net] = 0u;
                 values1[net] = mask;
             }
-            __syncthreads();
+            __syncwarp(warp_mask);
 
             for (int level = 0; level < level_count; ++level) {
                 const int start = level_offsets[level];
@@ -166,29 +204,18 @@ __global__ void simulateFaultKernel(const DeviceGate* gates,
                     const int idx = chunk + threadIdx.x;
                     if (idx < end) {
                         const int gate_idx = level_index[idx];
-                        s_gate[threadIdx.x] = gates[gate_idx];
-                        s_out_idx[threadIdx.x] = s_gate[threadIdx.x].output;
-                    }
-                    __syncthreads();
-                    if (idx < end) {
-                        const DeviceGate& gate = s_gate[threadIdx.x];
+                        const DeviceGate gate = loadGate(gates, gate_idx);
                         if (gate.output == net) {
-                            s_out0[threadIdx.x] = 0u;
-                            s_out1[threadIdx.x] = mask;
+                            values0[gate.output] = 0u;
+                            values1[gate.output] = mask;
                         } else {
                             const uint32_t out0 = evalGate<BITS>(gate, gate_inputs, values0, mask);
                             const uint32_t out1 = evalGate<BITS>(gate, gate_inputs, values1, mask);
-                            s_out0[threadIdx.x] = out0;
-                            s_out1[threadIdx.x] = out1;
+                            values0[gate.output] = out0;
+                            values1[gate.output] = out1;
                         }
                     }
-                    __syncthreads();
-                    if (idx < end) {
-                        const int out_idx = s_out_idx[threadIdx.x];
-                        values0[out_idx] = s_out0[threadIdx.x];
-                        values1[out_idx] = s_out1[threadIdx.x];
-                    }
-                    __syncthreads();
+                    __syncwarp(warp_mask);
                 }
             }
 
@@ -344,21 +371,28 @@ public:
                                   batch_masks.size() * sizeof(uint32_t),
                                   cudaMemcpyHostToDevice));
 
-        dim3 block(128);
+        dim3 block(32);
         const unsigned int blocks =
             static_cast<unsigned int>(std::min<std::size_t>(workspace_blocks_, net_count));
         dim3 grid(blocks);
-        const std::size_t shared_bytes =
-            (2u * static_cast<std::size_t>(block.x) * sizeof(uint32_t)) +
-            (static_cast<std::size_t>(block.x) * sizeof(int)) +
-            (static_cast<std::size_t>(block.x) * sizeof(gpu_detail::DeviceGate));
+        int shared_limit = 0;
+        int device = 0;
+        GPU_CUDA_CHECK(cudaGetDevice(&device));
+        GPU_CUDA_CHECK(
+            cudaDeviceGetAttribute(&shared_limit, cudaDevAttrMaxSharedMemoryPerBlock, device));
+        const std::size_t shared_needed = net_count * 2 * sizeof(uint32_t);
+        // Only use shared when it fits comfortably to keep occupancy (half of the limit).
+        const bool use_shared =
+            shared_needed > 0 && shared_needed <= static_cast<std::size_t>(shared_limit / 2);
+        const std::size_t shared_bytes = use_shared ? shared_needed : 0;
         gpu_detail::simulateFaultKernel<BITS><<<grid, block, shared_bytes>>>(
             d_gates_, d_gate_inputs_, d_gate_order_, static_cast<int>(gates_.size()),
             d_level_index_, d_level_offsets_, static_cast<int>(level_offsets_.size() - 1),
             d_primary_inputs_, static_cast<int>(primary_inputs_.size()),
             d_outputs_, static_cast<int>(outputs_.size()), d_base_matrix_, d_batch_masks_,
             out_count ? d_provided_matrix_ : nullptr, d_stuck0_matrix_, d_stuck1_matrix_,
-            d_values_matrix_, static_cast<int>(net_count), static_cast<int>(batch_count));
+            d_values_matrix_, static_cast<int>(net_count), static_cast<int>(batch_count),
+            use_shared ? 1 : 0);
         GPU_CUDA_CHECK(cudaGetLastError());
         GPU_CUDA_CHECK(cudaDeviceSynchronize());
 
@@ -393,11 +427,48 @@ private:
         gates_.clear();
         gate_inputs_.clear();
         gates_.reserve(source_gates.size());
+        auto gateOpcode = [](core::GateType type) {
+            switch (type) {
+                case core::GateType::And:
+                    return 0b1000;
+                case core::GateType::Nand:
+                    return 0b0111;
+                case core::GateType::Or:
+                    return 0b1110;
+                case core::GateType::Nor:
+                    return 0b0001;
+                case core::GateType::Xor:
+                    return 0b0110;
+                case core::GateType::Xnor:
+                    return 0b1001;
+                case core::GateType::Buf:
+                    return 0b1100;
+                case core::GateType::Not:
+                    return 0b0011;
+                case core::GateType::Unknown:
+                default:
+                    return 0;
+            }
+        };
+        auto fillMasks = [](gpu_detail::DeviceGate& g, int opcode) {
+            const uint32_t t3 = static_cast<uint32_t>(-((opcode >> 3) & 1));
+            const uint32_t t2 = static_cast<uint32_t>(-((opcode >> 2) & 1));
+            const uint32_t t1 = static_cast<uint32_t>(-((opcode >> 1) & 1));
+            const uint32_t t0 = static_cast<uint32_t>(-((opcode >> 0) & 1));
+            g.mask11 = t3;
+            g.mask10 = t2;
+            g.mask01 = t1;
+            g.mask00 = t0;
+        };
         for (const auto& gate : source_gates) {
             gpu_detail::DeviceGate g;
             g.output = static_cast<int>(gate.output);
             g.input_offset = static_cast<int>(gate_inputs_.size());
             g.input_count = static_cast<int>(gate.inputs.size());
+            g.op_code = gateOpcode(gate.type);
+            if (g.input_count == 2) {
+                fillMasks(g, g.op_code);
+            }
             switch (gate.type) {
                 case core::GateType::And:
                     g.op_kind = 0;
@@ -623,7 +694,7 @@ private:
     uint32_t* d_stuck1_matrix_{nullptr};
     uint32_t* d_values_matrix_{nullptr};
 
-    std::size_t workspace_blocks_{128};
+    std::size_t workspace_blocks_{2048};
     std::size_t pattern_batches_{0};
 };
 

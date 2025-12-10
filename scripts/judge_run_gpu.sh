@@ -127,7 +127,8 @@ for circuit in "${circuits[@]}"; do
     time_log="$(mktemp "${PWD}/judge_time.XXXXXX")"
 
     set +e
-    { "${TIME_CMD[@]}" "${SRUN_CMD[@]}" "${PROGRAM}" "${circuit}" "${temp_out}"; } 2> "${time_log}"
+    # Put timing inside srun so the measurement happens on the worker node.
+    { "${SRUN_CMD[@]}" "${TIME_CMD[@]}" "${PROGRAM}" "${circuit}" "${temp_out}"; } 2> "${time_log}"
     prog_status=$?
     set -e
 
