@@ -10,9 +10,9 @@
 #include <string>
 #include <vector>
 
-#include "algorithm/baseline_simulator.hpp"
 #include "algorithm/bit_parallel_simulator.hpp"
 #include "core/pattern_generator.hpp"
+#include "core/simulator.hpp"
 #include "io/answer_writer.hpp"
 #include "io/circuit_parser.hpp"
 
@@ -110,6 +110,7 @@ int main(int argc, char** argv) {
         auto circuit = io::parseCircuit(circuit_path);
         core::PatternGenerator generator(circuit, seed);
         auto patterns = generator.generate(pattern_count);
+        core::Simulator simulator(circuit);
 
         std::ofstream output(output_path);
         if (!output) {
@@ -118,14 +119,12 @@ int main(int argc, char** argv) {
         const auto& outputs = circuit.primaryOutputs();
         std::vector<io::PatternRow> rows;
         rows.reserve(patterns.size());
-        algorithm::BaselineSimulator baseline(circuit, rows);
-        algorithm::BitParallelSimulator bit(circuit, rows);
 
         for (std::size_t i = 0; i < patterns.size(); ++i) {
             output << patterns[i].toString(circuit) << " | ";
             io::PatternRow row;
             row.pattern = patterns[i];
-            const auto golden_outputs = baseline.simulateOutputs(patterns[i]);
+            const auto golden_outputs = simulator.simulate(patterns[i]).primary_outputs;
             for (std::size_t j = 0; j < outputs.size(); ++j) {
                 const std::string& net_name = circuit.netName(outputs[j]);
                 output << net_name << '=' << golden_outputs[j];
@@ -140,6 +139,7 @@ int main(int argc, char** argv) {
         std::cout << "Wrote " << patterns.size() << " patterns for " << circuit_file << " to "
                   << output_path << '\n';
 
+        algorithm::BitParallelSimulator bit(circuit, rows);
         bit.start();
 
         const std::string ans_path = "testcases/" + circuitBaseName(circuit_file) + ".ans";

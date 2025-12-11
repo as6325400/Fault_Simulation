@@ -1,38 +1,57 @@
 CXX := g++
 CXXFLAGS := -std=c++20 -Wall -Wextra -pedantic -O2 -fopenmp
+NVCC := nvcc
+NVCCFLAGS := -std=c++20 -O2 -Xcompiler "-fopenmp -Wall -Wextra -pedantic"
 SRC_DIR := src
 CPPFLAGS := -I$(SRC_DIR)
 BUILD_DIR := build
 BIN_DIR := bin
 GEN_DIR := generator
 TARGET := $(BIN_DIR)/main
+GPU_TARGET := $(BIN_DIR)/main_gpu
 GENERATOR_BIN := $(GEN_DIR)/pattern
 
 # Allow invoking `make SOMEFLAG` to compile with -DSOMEFLAG automatically.
-DEFAULT_GOALS := all clean
-EXTRA_GOALS := $(filter-out $(DEFAULT_GOALS),$(MAKECMDGOALS))
+NON_FLAG_GOALS := all clean cpu gpu generator
+BUILD_ONLY_GOALS := all cpu gpu generator
+EXTRA_GOALS := $(filter-out $(NON_FLAG_GOALS),$(MAKECMDGOALS))
+PRIMARY_BUILD_GOAL := $(or $(firstword $(filter $(BUILD_ONLY_GOALS),$(MAKECMDGOALS))),all)
 CPPFLAGS += $(addprefix -D,$(EXTRA_GOALS))
 
 ALL_SRCS := $(shell find $(SRC_DIR) -name '*.cpp')
+CUDA_SRCS := $(shell find $(SRC_DIR) -name '*.cu')
 FAULT_SIM_SRC := $(SRC_DIR)/main.cpp
+GPU_FAULT_SIM_SRC := $(SRC_DIR)/main.cu
 GENERATOR_SRC := $(SRC_DIR)/generator_main.cpp
-LIB_SRCS := $(filter-out $(FAULT_SIM_SRC) $(GENERATOR_SRC), $(ALL_SRCS))
+LIB_SRCS := $(filter-out $(FAULT_SIM_SRC) $(GPU_FAULT_SIM_SRC) $(GENERATOR_SRC), $(ALL_SRCS))
 
 LIB_OBJS := $(LIB_SRCS:$(SRC_DIR)/%.cpp=$(BUILD_DIR)/%.o)
 FAULT_SIM_OBJ := $(FAULT_SIM_SRC:$(SRC_DIR)/%.cpp=$(BUILD_DIR)/%.o)
+GPU_FAULT_SIM_OBJ := $(GPU_FAULT_SIM_SRC:$(SRC_DIR)/%.cu=$(BUILD_DIR)/%.cu.o)
 GENERATOR_OBJ := $(GENERATOR_SRC:$(SRC_DIR)/%.cpp=$(BUILD_DIR)/%.o)
+CUDA_OBJS := $(filter-out $(GPU_FAULT_SIM_OBJ), $(CUDA_SRCS:$(SRC_DIR)/%.cu=$(BUILD_DIR)/%.cu.o))
 
-.PHONY: all clean $(EXTRA_GOALS)
+.PHONY: all clean cpu gpu generator $(EXTRA_GOALS)
 .DEFAULT_GOAL := all
 
-all: $(TARGET) $(GENERATOR_BIN)
+all: $(TARGET) $(GPU_TARGET) $(GENERATOR_BIN)
 
-# Any extra goal simply builds the binaries with the corresponding -D flag(s).
-$(EXTRA_GOALS): all
+cpu: $(TARGET)
+
+gpu: $(GPU_TARGET)
+
+generator: $(GENERATOR_BIN)
+
+# Any extra goal simply builds the selected binaries with the corresponding -D flag(s).
+$(EXTRA_GOALS): $(PRIMARY_BUILD_GOAL)
 
 $(TARGET): $(LIB_OBJS) $(FAULT_SIM_OBJ)
 	@mkdir -p $(dir $@)
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) $^ -o $@
+
+$(GPU_TARGET): $(LIB_OBJS) $(CUDA_OBJS) $(GPU_FAULT_SIM_OBJ)
+	@mkdir -p $(dir $@)
+	$(NVCC) $(CPPFLAGS) $(NVCCFLAGS) $^ -o $@
 
 $(GENERATOR_BIN): $(LIB_OBJS) $(GENERATOR_OBJ)
 	@mkdir -p $(dir $@)
@@ -42,5 +61,9 @@ $(BUILD_DIR)/%.o: $(SRC_DIR)/%.cpp
 	@mkdir -p $(dir $@)
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -c $< -o $@
 
+$(BUILD_DIR)/%.cu.o: $(SRC_DIR)/%.cu
+	@mkdir -p $(dir $@)
+	$(NVCC) $(CPPFLAGS) $(NVCCFLAGS) -c $< -o $@
+
 clean:
-	rm -rf $(BUILD_DIR) $(TARGET) $(GENERATOR_BIN)
+	rm -rf $(BUILD_DIR) $(TARGET) $(GPU_TARGET) $(GENERATOR_BIN)

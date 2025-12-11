@@ -1,4 +1,4 @@
-// Fault simulation front-end that reads pre-generated patterns and writes answers.
+// GPU fault simulation front-end mirroring main.cpp but using CUDA simulators.
 
 #include <algorithm>
 #include <cstdlib>
@@ -7,14 +7,17 @@
 #include <string>
 #include <sys/time.h>
 
-#include "algorithm/baseline_simulator.hpp"
-#include "algorithm/batch1_mt_fault.hpp"
-#include "algorithm/batch_64_baseline.hpp"
-#include "algorithm/batch_baseline.hpp"
-#include "algorithm/bit_parallel_simulator.hpp"
+#include "algorithm/batch1_gpu_fault.hpp"
+#include "algorithm/batch32_gpu_fault.hpp"
 #include "io/answer_writer.hpp"
 #include "io/circuit_parser.hpp"
 #include "io/pattern_loader.hpp"
+
+double getTimeStamp() {
+    struct timeval tv;
+    gettimeofday(&tv, NULL);
+    return (double) tv.tv_usec/1000000 + tv.tv_sec;
+}
 
 namespace {
 
@@ -39,12 +42,6 @@ std::string circuitBaseName(const std::string& file_name) {
     return file_name;
 }
 
-double getTimeStamp() {
-    struct timeval tv;
-    gettimeofday(&tv, nullptr);
-    return static_cast<double>(tv.tv_usec) / 1000000.0 + tv.tv_sec;
-}
-
 void printUsage(const char* program) {
     std::cerr << "Usage: " << program << " <circuit> <output-path>\n";
     std::cerr << "  circuit: testcase basename or .v file under testcases/\n";
@@ -62,7 +59,6 @@ int main(int argc, char** argv) {
     const std::string output_path = argv[2];
 
     try {
-        std::cerr << "Parsing circuit...\n";
         const std::string circuit_file = circuitFileName(circuit_arg);
         const std::string base_name = circuitBaseName(circuit_file);
         const std::string circuit_path = "testcases/" + circuit_file;
@@ -71,33 +67,18 @@ int main(int argc, char** argv) {
         auto circuit = io::parseCircuit(circuit_path);
         auto rows = io::loadPatterns(circuit, pattern_path);
 
-        // Select simulator via compile-time flag. Default keeps BatchBaseline for prior behavior.
-#ifdef BATCH64_MT_FAULT
-        algorithm::Batch64MtFaultSimulator simulator(circuit, rows);
-#elif defined(BATCH1_MT_FAULT)
-        algorithm::Batch1MtFaultSimulator simulator(circuit, rows);
-#elif defined(BATCH64)
-        algorithm::Batch64BaselineSimulator simulator(circuit, rows);
-#elif defined(BATCHBASELINE)
-        algorithm::BatchBaselineSimulator simulator(circuit, rows);
-#elif defined(BITPARALLEL)
-        algorithm::BitParallelSimulator simulator(circuit, rows);
-#elif defined(BASELINE)
-        algorithm::BaselineSimulator simulator(circuit, rows);
+#ifdef BATCH1GPU
+        algorithm::Batch1GpuFaultSimulator simulator(circuit, rows);
 #else
-        algorithm::BatchBaselineSimulator simulator(circuit, rows);
+        algorithm::Batch32GpuFaultSimulator simulator(circuit, rows);
 #endif
 
         std::cout << simulator.describeIOShape() << '\n';
-
-        std::cerr << "Precomputing answers...\n";
         const double compute_start = getTimeStamp();
         simulator.start();
         const double compute_end = getTimeStamp();
         const double compute_seconds = compute_end - compute_start;
         std::cerr << "compute_time_s " << compute_seconds << '\n';
-
-        std::cerr << "Writing output...\n";
         io::writeAnswerFile(simulator, output_path);
 
     } catch (const std::exception& ex) {

@@ -16,6 +16,11 @@ if [[ ! -x "${PROGRAM}" ]]; then
     exit 1
 fi
 
+if ! command -v srun >/dev/null 2>&1; then
+    echo "error: srun is required but not available in PATH" >&2
+    exit 1
+fi
+
 if [[ $# -eq 0 ]]; then
     shopt -s nullglob
     circuits=()
@@ -45,6 +50,8 @@ if command -v /usr/bin/time >/dev/null 2>&1; then
 else
     TIME_CMD=(time -p)
 fi
+
+SRUN_CMD=(srun -p nvidia -N1 -n1 --gres=gpu:1 --chdir="${PWD}")
 
 status=0
 table_rows=()
@@ -122,11 +129,12 @@ for circuit in "${circuits[@]}"; do
         continue
     fi
 
-    temp_out="$(mktemp)"
-    time_log="$(mktemp)"
+    temp_out="$(mktemp "${PWD}/judge_out.XXXXXX")"
+    time_log="$(mktemp "${PWD}/judge_time.XXXXXX")"
 
     set +e
-    { "${TIME_CMD[@]}" "${PROGRAM}" "${circuit}" "${temp_out}"; } 2> "${time_log}"
+    # Put timing inside srun so the measurement happens on the worker node.
+    { "${SRUN_CMD[@]}" "${TIME_CMD[@]}" "${PROGRAM}" "${circuit}" "${temp_out}"; } 2> "${time_log}"
     prog_status=$?
     set -e
 
