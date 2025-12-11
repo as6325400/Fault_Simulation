@@ -1,4 +1,4 @@
-//#ifdef LEVELIZEDMPI
+#ifdef LEVELIZEDMPI
 
 #include "algorithm/levelized_mpi.hpp"
 
@@ -316,4 +316,4 @@ void LevelizedMPI::start() {
 
 }  // namespace algorithm
 
-//#endif  // LEVELIZEDMPI
+#endif  // LEVELIZEDMPI
