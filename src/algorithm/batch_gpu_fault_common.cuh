@@ -4,8 +4,11 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <iomanip>
+#include <iostream>
 #include <limits>
 #include <queue>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -57,6 +60,8 @@ __device__ uint32_t evalGate(const DeviceGate& gate,
                 (~a & ~b & gate.mask00)) &
                mask;
     }
+
+    return 1;
 
     uint32_t v = 0;
     if (gate.op_kind == 0) {  // AND/NAND
@@ -158,7 +163,8 @@ __global__ void simulateFaultKernel(const DeviceGate* __restrict__ gates,
                                     uint32_t* __restrict__ stuck0_matrix,
                                     uint32_t* __restrict__ stuck1_matrix,
                                     uint32_t* __restrict__ values_matrix,
-                                    int net_count,
+                                    int value_net_count,
+                                    int fault_net_count,
                                     int batch_count,
                                     int use_shared_values,
                                     int logical_warps,
@@ -177,17 +183,17 @@ __global__ void simulateFaultKernel(const DeviceGate* __restrict__ gates,
     if (use_shared_values) {
         extern __shared__ uint32_t shared_values[];
         uint32_t* warp_base =
-            shared_values + static_cast<std::size_t>(warp_in_block) * net_count * 2;
+            shared_values + static_cast<std::size_t>(warp_in_block) * value_net_count * 2;
         values0 = warp_base;
-        values1 = warp_base + net_count;
+        values1 = warp_base + value_net_count;
     } else {
         uint32_t* block_base =
-            values_matrix + static_cast<std::size_t>(logical_warp) * net_count * 2;
+            values_matrix + static_cast<std::size_t>(logical_warp) * value_net_count * 2;
         values0 = block_base;
-        values1 = block_base + net_count;
+        values1 = block_base + value_net_count;
     }
 
-    for (int net = logical_warp; net < net_count; net += gridDim.x * warps_per_block) {
+    for (int net = logical_warp; net < fault_net_count; net += gridDim.x * warps_per_block) {
         for (int batch = 0; batch < batch_count; ++batch) {
 #if __CUDA_ARCH__ >= 350
             const uint32_t mask = __ldg(&batch_masks[batch]);
@@ -195,7 +201,7 @@ __global__ void simulateFaultKernel(const DeviceGate* __restrict__ gates,
             const uint32_t mask = batch_masks[batch];
 #endif
             const uint32_t* base_values =
-                base_matrix + static_cast<std::size_t>(batch) * net_count;
+                base_matrix + static_cast<std::size_t>(batch) * value_net_count;
             const uint32_t* provided_values =
                 provided_matrix ? provided_matrix + static_cast<std::size_t>(batch) * output_count
                                 : nullptr;
@@ -250,7 +256,8 @@ __global__ void simulateFaultKernel(const DeviceGate* __restrict__ gates,
                         eq1 &= ~(values1[o] ^ pv) & mask;
                     }
                 }
-                const std::size_t out_idx = static_cast<std::size_t>(batch) * net_count + net;
+                const std::size_t out_idx =
+                    static_cast<std::size_t>(batch) * fault_net_count + net;
                 stuck0_matrix[out_idx] = eq0;
                 stuck1_matrix[out_idx] = eq1;
             }
@@ -264,18 +271,21 @@ template <int BITS>
 class BatchGpuFaultSimulator : public FaultSimulator {
 public:
     BatchGpuFaultSimulator(const core::Circuit& circuit, const std::vector<io::PatternRow>& rows)
-        : FaultSimulator(circuit, rows) {
-        const std::size_t net_count = circuit_.netCount();
-        if (net_count > static_cast<std::size_t>(std::numeric_limits<int>::max())) {
+        : FaultSimulator(circuit, rows), fault_net_count_(circuit_.netCount()) {
+        if (fault_net_count_ > static_cast<std::size_t>(std::numeric_limits<int>::max())) {
             throw std::runtime_error("Net count exceeds GPU simulator limits");
         }
-
-        net_to_gate_.assign(net_count, -1);
-        for (std::size_t i = 0; i < circuit_.gates().size(); ++i) {
-            net_to_gate_[circuit_.gates()[i].output] = static_cast<int>(i);
+        prepareWorkingGates();
+        if (working_net_count_ > static_cast<std::size_t>(std::numeric_limits<int>::max())) {
+            throw std::runtime_error("Transformed net count exceeds GPU simulator limits");
         }
 
-        output_index_by_net_.assign(net_count, -1);
+        net_to_gate_.assign(working_net_count_, -1);
+        for (std::size_t i = 0; i < working_gates_.size(); ++i) {
+            net_to_gate_[working_gates_[i].output] = static_cast<int>(i);
+        }
+
+        output_index_by_net_.assign(fault_net_count_, -1);
         outputs_.reserve(circuit_.primaryOutputs().size());
         for (std::size_t i = 0; i < circuit_.primaryOutputs().size(); ++i) {
             const auto net = circuit_.primaryOutputs()[i];
@@ -338,18 +348,17 @@ public:
     }
 
     void start() override {
-        const std::size_t net_count = circuit_.netCount();
         const std::size_t out_count = outputs_.size();
         const std::size_t batch_count = pattern_batches_;
-        if (batch_count == 0 || net_count == 0) {
+        if (batch_count == 0 || fault_net_count_ == 0) {
             return;
         }
 
-        std::vector<uint32_t> base_matrix(batch_count * net_count, 0u);
+        std::vector<uint32_t> base_matrix(batch_count * working_net_count_, 0u);
         std::vector<uint32_t> provided_matrix(batch_count * out_count, 0u);
         std::vector<uint32_t> batch_masks(batch_count, 0u);
-        std::vector<uint32_t> host_stuck0(batch_count * net_count, 0u);
-        std::vector<uint32_t> host_stuck1(batch_count * net_count, 0u);
+        std::vector<uint32_t> host_stuck0(batch_count * fault_net_count_, 0u);
+        std::vector<uint32_t> host_stuck1(batch_count * fault_net_count_, 0u);
 
         for (std::size_t batch = 0; batch < batch_count; ++batch) {
             const std::size_t base = batch * static_cast<std::size_t>(BITS);
@@ -363,7 +372,7 @@ public:
                 const uint32_t bit = uint32_t{1} << offset;
                 for (const auto& entry : row.pattern.assignments) {
                     if (entry.value) {
-                        base_matrix[batch * net_count + entry.net] |= bit;
+                        base_matrix[batch * working_net_count_ + entry.net] |= bit;
                     }
                 }
                 if (out_count > 0) {
@@ -391,7 +400,7 @@ public:
                                   cudaMemcpyHostToDevice));
 
         const std::size_t logical_warps =
-            std::min<std::size_t>(workspace_blocks_, net_count);
+            std::min<std::size_t>(workspace_blocks_, fault_net_count_);
         int shared_limit = 0;
         int device = 0;
         int warp_width = 0;
@@ -402,7 +411,7 @@ public:
         if (warp_width <= 0) {
             warp_width = 32;
         }
-        const std::size_t shared_needed = net_count * 2 * sizeof(uint32_t);
+        const std::size_t shared_needed = working_net_count_ * 2 * sizeof(uint32_t);
         // Only use shared when it fits comfortably to keep occupancy (half of the limit).
         const bool use_shared =
             shared_needed > 0 && shared_needed <= static_cast<std::size_t>(shared_limit / 2);
@@ -413,13 +422,18 @@ public:
         dim3 block(static_cast<unsigned>(warps_per_block * warp_width));
         dim3 grid(static_cast<unsigned>(blocks));
         const std::size_t shared_bytes = use_shared ? shared_needed : 0;
+#ifdef GPU_FORCE_BINARY_FANIN
+        std::cout << describeGateInputStats() << '\n';
+        std::cout << describeMemoryTraffic(use_shared, warps_per_block) << '\n';
+#endif
         gpu_detail::simulateFaultKernel<BITS><<<grid, block, shared_bytes>>>(
             d_gates_, d_gate_inputs_, d_gate_order_, static_cast<int>(gates_.size()),
             d_level_index_, d_level_offsets_, static_cast<int>(level_offsets_.size() - 1),
             d_primary_inputs_, static_cast<int>(primary_inputs_.size()),
             d_outputs_, static_cast<int>(outputs_.size()), d_base_matrix_, d_batch_masks_,
             out_count ? d_provided_matrix_ : nullptr, d_stuck0_matrix_, d_stuck1_matrix_,
-            d_values_matrix_, static_cast<int>(net_count), static_cast<int>(batch_count),
+            d_values_matrix_, static_cast<int>(working_net_count_),
+            static_cast<int>(fault_net_count_), static_cast<int>(batch_count),
             use_shared ? 1 : 0, static_cast<int>(logical_warps), warps_per_block);
         GPU_CUDA_CHECK(cudaGetLastError());
         GPU_CUDA_CHECK(cudaDeviceSynchronize());
@@ -434,9 +448,9 @@ public:
         for (std::size_t batch = 0; batch < batch_count; ++batch) {
             const std::size_t base = batch * static_cast<std::size_t>(BITS);
             const std::size_t chunk_size = std::min<std::size_t>(BITS, rows_.size() - base);
-            const uint32_t* batch_stuck0 = host_stuck0.data() + batch * net_count;
-            const uint32_t* batch_stuck1 = host_stuck1.data() + batch * net_count;
-            for (std::size_t net = 0; net < net_count; ++net) {
+            const uint32_t* batch_stuck0 = host_stuck0.data() + batch * fault_net_count_;
+            const uint32_t* batch_stuck1 = host_stuck1.data() + batch * fault_net_count_;
+            for (std::size_t net = 0; net < fault_net_count_; ++net) {
                 const uint32_t eq0 = batch_stuck0[net];
                 const uint32_t eq1 = batch_stuck1[net];
                 for (std::size_t offset = 0; offset < chunk_size; ++offset) {
@@ -449,9 +463,242 @@ public:
         }
     }
 
+    std::string describeGateInputStats() const {
+        const std::size_t original_total = circuit_.gates().size();
+        const std::size_t transformed_total = working_gates_.size();
+        auto render = [](const std::vector<std::size_t>& hist, std::size_t total) {
+            std::ostringstream oss;
+            bool first = true;
+            for (std::size_t fanin = 0; fanin < hist.size(); ++fanin) {
+                if (hist[fanin] == 0) {
+                    continue;
+                }
+                if (!first) {
+                    oss << ", ";
+                }
+                oss << fanin << "in=" << hist[fanin];
+                if (total > 0) {
+                    const double pct =
+                        (static_cast<double>(hist[fanin]) * 100.0) / static_cast<double>(total);
+                    oss << " (" << std::fixed << std::setprecision(1) << pct << "%)";
+                }
+                first = false;
+            }
+            return oss.str();
+        };
+
+        const std::size_t gate_delta =
+            (transformed_total >= original_total) ? (transformed_total - original_total)
+                                                  : (original_total - transformed_total);
+        const std::size_t net_delta =
+            (working_net_count_ >= fault_net_count_) ? (working_net_count_ - fault_net_count_)
+                                                     : (fault_net_count_ - working_net_count_);
+        const int depth_delta =
+            (working_max_level_ >= original_max_level_) ? (working_max_level_ - original_max_level_)
+                                                        : (original_max_level_ - working_max_level_);
+        const std::size_t warps = std::min<std::size_t>(workspace_blocks_, fault_net_count_);
+        const std::size_t value_bytes = working_net_count_ * warps * 2 * sizeof(uint32_t);
+        const std::size_t base_bytes = working_net_count_ * pattern_batches_ * sizeof(uint32_t);
+        const std::size_t stuck_bytes = fault_net_count_ * pattern_batches_ * sizeof(uint32_t);
+        const std::size_t shared_bytes_needed = working_net_count_ * 2 * sizeof(uint32_t);
+
+        std::ostringstream oss;
+        oss << "original gates=" << original_total << " ["
+            << render(original_fanin_hist_, original_total) << "], depth=" << original_max_level_
+            << ", nets=" << fault_net_count_ << "; ";
+        oss << "transformed gates=" << transformed_total << " ["
+            << render(working_fanin_hist_, transformed_total) << "], depth=" << working_max_level_
+            << ", nets=" << working_net_count_;
+        oss << " (gate_delta=" << (transformed_total >= original_total ? "+" : "-") << gate_delta
+            << ", net_delta=" << (working_net_count_ >= fault_net_count_ ? "+" : "-") << net_delta
+            << ", depth_delta=" << (working_max_level_ >= original_max_level_ ? "+" : "-")
+            << depth_delta << ")";
+        oss << "; buffers: value_bytes=" << value_bytes << " ("
+            << warps << " warps), base_bytes=" << base_bytes
+            << ", stuck_bytes=" << stuck_bytes
+            << ", shared_bytes_if_used=" << shared_bytes_needed;
+        return oss.str();
+    }
+
+    std::string describeMemoryTraffic(bool use_shared, int warps_per_block) const {
+        const std::size_t per_fault_batch_loads = working_total_inputs_ * 2;   // values0/values1
+        const std::size_t per_fault_batch_stores = working_gates_.size() * 2;  // values0/values1
+        const unsigned long long total_loads =
+            static_cast<unsigned long long>(per_fault_batch_loads) *
+            static_cast<unsigned long long>(fault_net_count_) *
+            static_cast<unsigned long long>(pattern_batches_);
+        const unsigned long long total_stores =
+            static_cast<unsigned long long>(per_fault_batch_stores) *
+            static_cast<unsigned long long>(fault_net_count_) *
+            static_cast<unsigned long long>(pattern_batches_);
+
+        std::ostringstream oss;
+        oss << "value_traffic ("
+            << (use_shared ? "shared" : "global")
+            << ", warps_per_block=" << warps_per_block << "): per(fault,batch) loads="
+            << per_fault_batch_loads << " stores=" << per_fault_batch_stores
+            << "; total loads=" << total_loads << " stores=" << total_stores;
+        return oss.str();
+    }
+
 private:
+    void prepareWorkingGates() {
+        working_net_count_ = fault_net_count_;
+        original_fanin_hist_ = faninHistogram(circuit_.gates());
+        original_max_level_ = computeMaxLevel(circuit_.gates(), fault_net_count_);
+        original_total_inputs_ = countTotalInputs(circuit_.gates());
+#ifdef GPU_FORCE_BINARY_FANIN
+        working_gates_ = binarizeGates(circuit_.gates(), working_net_count_);
+#else
+        working_gates_.assign(circuit_.gates().begin(), circuit_.gates().end());
+#endif
+        working_fanin_hist_ = faninHistogram(working_gates_);
+        working_total_inputs_ = countTotalInputs(working_gates_);
+    }
+
+    std::vector<core::Gate> binarizeGates(const std::vector<core::Gate>& source,
+                                          std::size_t& net_count) const {
+        std::vector<core::Gate> result;
+        result.reserve(source.size());
+        std::size_t next_net = net_count;
+        auto nextNetId = [&]() -> std::size_t {
+            if (next_net == std::numeric_limits<std::size_t>::max()) {
+                throw std::runtime_error("Net id overflow during gate binarization");
+            }
+            return next_net++;
+        };
+        auto emitChain = [&](const core::Gate& g, core::GateType mid_type,
+                             core::GateType last_type) {
+            core::NetId acc = g.inputs[0];
+            for (std::size_t i = 1; i < g.inputs.size(); ++i) {
+                core::Gate new_gate;
+                new_gate.type = (i + 1 == g.inputs.size()) ? last_type : mid_type;
+                new_gate.name = g.name;
+                new_gate.output = (i + 1 == g.inputs.size()) ? g.output : nextNetId();
+                new_gate.inputs = {acc, g.inputs[i]};
+                result.push_back(std::move(new_gate));
+                acc = result.back().output;
+            }
+        };
+
+        for (const auto& g : source) {
+            const std::size_t fanin = g.inputs.size();
+            if (fanin == 0) {
+                result.push_back(g);
+                continue;
+            }
+            if (fanin == 1) {
+                if (g.type != core::GateType::Buf && g.type != core::GateType::Not) {
+                    throw std::runtime_error("Unsupported single-input gate type for binary fanin mode");
+                }
+                core::Gate dup = g;
+                dup.inputs = {g.inputs[0], g.inputs[0]};
+                result.push_back(std::move(dup));
+                continue;
+            }
+            if (fanin == 2) {
+                result.push_back(g);
+                continue;
+            }
+            switch (g.type) {
+                case core::GateType::And:
+                    emitChain(g, core::GateType::And, core::GateType::And);
+                    break;
+                case core::GateType::Nand:
+                    emitChain(g, core::GateType::And, core::GateType::Nand);
+                    break;
+                case core::GateType::Or:
+                    emitChain(g, core::GateType::Or, core::GateType::Or);
+                    break;
+                case core::GateType::Nor:
+                    emitChain(g, core::GateType::Or, core::GateType::Nor);
+                    break;
+                case core::GateType::Xor:
+                    emitChain(g, core::GateType::Xor, core::GateType::Xor);
+                    break;
+                case core::GateType::Xnor:
+                    emitChain(g, core::GateType::Xor, core::GateType::Xnor);
+                    break;
+                case core::GateType::Buf:
+                case core::GateType::Not:
+                    throw std::runtime_error("Unexpected multi-input BUF/NOT gate in GPU simulator");
+                case core::GateType::Unknown:
+                default:
+                    throw std::runtime_error("Unsupported gate type for GPU simulator");
+            }
+        }
+        net_count = next_net;
+        return result;
+    }
+
+    static std::vector<std::size_t> faninHistogram(const std::vector<core::Gate>& gates) {
+        std::size_t max_fanin = 0;
+        for (const auto& g : gates) {
+            max_fanin = std::max<std::size_t>(max_fanin, g.inputs.size());
+        }
+        std::vector<std::size_t> hist(max_fanin + 1, 0);
+        for (const auto& g : gates) {
+            ++hist[g.inputs.size()];
+        }
+        return hist;
+    }
+
+    static std::size_t countTotalInputs(const std::vector<core::Gate>& gates) {
+        std::size_t sum = 0;
+        for (const auto& g : gates) {
+            sum += g.inputs.size();
+        }
+        return sum;
+    }
+
+    static int computeMaxLevel(const std::vector<core::Gate>& gates, std::size_t net_count) {
+        std::vector<int> net_to_gate(net_count, -1);
+        for (std::size_t i = 0; i < gates.size(); ++i) {
+            net_to_gate[gates[i].output] = static_cast<int>(i);
+        }
+        std::vector<int> indegree(gates.size(), 0);
+        std::vector<std::vector<int>> adj(gates.size());
+        for (std::size_t i = 0; i < gates.size(); ++i) {
+            for (auto net : gates[i].inputs) {
+                const int driver = net_to_gate[net];
+                if (driver >= 0) {
+                    adj[static_cast<std::size_t>(driver)].push_back(static_cast<int>(i));
+                    ++indegree[i];
+                }
+            }
+        }
+        std::queue<int> q;
+        for (std::size_t i = 0; i < indegree.size(); ++i) {
+            if (indegree[i] == 0) {
+                q.push(static_cast<int>(i));
+            }
+        }
+        std::vector<int> level(gates.size(), 1);
+        std::size_t visited = 0;
+        int max_level = 0;
+        while (!q.empty()) {
+            const int g = q.front();
+            q.pop();
+            ++visited;
+            const int cur_level = level[static_cast<std::size_t>(g)];
+            max_level = std::max(max_level, cur_level);
+            for (int dst : adj[static_cast<std::size_t>(g)]) {
+                level[static_cast<std::size_t>(dst)] =
+                    std::max(level[static_cast<std::size_t>(dst)], cur_level + 1);
+                --indegree[static_cast<std::size_t>(dst)];
+                if (indegree[static_cast<std::size_t>(dst)] == 0) {
+                    q.push(dst);
+                }
+            }
+        }
+        if (visited != gates.size()) {
+            throw std::runtime_error("Topological order failed in depth calculation");
+        }
+        return max_level;
+    }
+
     void buildTopology() {
-        const auto& source_gates = circuit_.gates();
+        const auto& source_gates = working_gates_;
         gates_.clear();
         gate_inputs_.clear();
         gates_.reserve(source_gates.size());
@@ -581,7 +828,7 @@ private:
         level_offsets_.clear();
         level_offsets_.push_back(0);
         std::vector<int> level_of_gate(gates_.size(), 0);
-        const auto& source_gates = circuit_.gates();
+        const auto& source_gates = working_gates_;
         for (std::size_t i = 0; i < source_gates.size(); ++i) {
             int max_parent = 0;
             for (auto net : source_gates[i].inputs) {
@@ -597,6 +844,7 @@ private:
         for (int lv : level_of_gate) {
             max_level = std::max(max_level, lv);
         }
+        working_max_level_ = max_level;
         std::vector<int> level_counts(static_cast<std::size_t>(max_level + 1), 0);
         for (int lv : level_of_gate) {
             ++level_counts[static_cast<std::size_t>(lv)];
@@ -657,31 +905,35 @@ private:
     }
 
     void ensureWorkBuffers() {
-        const std::size_t net_count = circuit_.netCount();
         const std::size_t out_count = outputs_.size();
-        if (net_count == 0) {
+        if (fault_net_count_ == 0) {
             return;
         }
-        const std::size_t warps = std::min<std::size_t>(workspace_blocks_, net_count);
-        const std::size_t values_elems = net_count * warps * 2;
-        if (warps == 0 || values_elems / net_count != warps * 2) {
+        const std::size_t warps = std::min<std::size_t>(workspace_blocks_, fault_net_count_);
+        const std::size_t values_elems = working_net_count_ * warps * 2;
+        if (warps == 0 ||
+            (working_net_count_ > 0 && values_elems / working_net_count_ != warps * 2)) {
             throw std::runtime_error("Value buffer size overflow for GPU simulator");
         }
         if (values_elems > 0 && !d_values_matrix_) {
             GPU_CUDA_CHECK(cudaMalloc(&d_values_matrix_, values_elems * sizeof(uint32_t)));
         }
 
-        if (pattern_batches_ == 0 || net_count == 0) {
+        if (pattern_batches_ == 0) {
             return;
         }
 
-        const std::size_t batch_span = net_count * pattern_batches_;
-        if (batch_span / net_count != pattern_batches_) {
+        const std::size_t base_span = working_net_count_ * pattern_batches_;
+        const std::size_t stuck_span = fault_net_count_ * pattern_batches_;
+        if (working_net_count_ > 0 && base_span / working_net_count_ != pattern_batches_) {
             throw std::runtime_error("Batch buffer size overflow for GPU simulator");
+        }
+        if (fault_net_count_ > 0 && stuck_span / fault_net_count_ != pattern_batches_) {
+            throw std::runtime_error("Stuck buffer size overflow for GPU simulator");
         }
 
         if (!d_base_matrix_) {
-            GPU_CUDA_CHECK(cudaMalloc(&d_base_matrix_, batch_span * sizeof(uint32_t)));
+            GPU_CUDA_CHECK(cudaMalloc(&d_base_matrix_, base_span * sizeof(uint32_t)));
         }
         if (out_count > 0 && !d_provided_matrix_) {
             GPU_CUDA_CHECK(
@@ -691,12 +943,22 @@ private:
             GPU_CUDA_CHECK(cudaMalloc(&d_batch_masks_, pattern_batches_ * sizeof(uint32_t)));
         }
         if (!d_stuck0_matrix_) {
-            GPU_CUDA_CHECK(cudaMalloc(&d_stuck0_matrix_, batch_span * sizeof(uint32_t)));
+            GPU_CUDA_CHECK(cudaMalloc(&d_stuck0_matrix_, stuck_span * sizeof(uint32_t)));
         }
         if (!d_stuck1_matrix_) {
-            GPU_CUDA_CHECK(cudaMalloc(&d_stuck1_matrix_, batch_span * sizeof(uint32_t)));
+            GPU_CUDA_CHECK(cudaMalloc(&d_stuck1_matrix_, stuck_span * sizeof(uint32_t)));
         }
     }
+
+    const std::size_t fault_net_count_;
+    std::size_t working_net_count_{0};
+    std::vector<core::Gate> working_gates_;
+    std::vector<std::size_t> original_fanin_hist_;
+    std::vector<std::size_t> working_fanin_hist_;
+    int original_max_level_{0};
+    int working_max_level_{0};
+    std::size_t original_total_inputs_{0};
+    std::size_t working_total_inputs_{0};
 
     std::vector<int> net_to_gate_;
     std::vector<int> output_index_by_net_;
